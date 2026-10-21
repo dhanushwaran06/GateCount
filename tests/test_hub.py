@@ -1,8 +1,11 @@
 """Hub API: seq ordering, stale messages, calibration, INSIDE >= 0, day boundary, auth, health, history."""
 
+import asyncio
 import json
+import time
 from datetime import datetime
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -204,6 +207,28 @@ def test_group_entry_can_be_undone(make_client):
     assert c.delete(f"/api/v1/groups/{gid}", headers={"Authorization": f"Bearer {PIN}"}).status_code == 200
     assert c.get("/api/v1/state").json()["in"] == 0
     assert c.delete(f"/api/v1/groups/{gid}", headers={"Authorization": f"Bearer {PIN}"}).status_code == 404
+
+
+def test_short_staff_pin_keeps_the_form_off(make_client):
+    c = make_client(staff_pin="1234")
+    assert add_group(c, 10, pin="1234").status_code == 403
+
+
+def test_wrong_pins_are_serialised_across_connections(tmp_path, monkeypatch):
+    monkeypatch.setattr(hub_app, "today", lambda: DAY)
+    app = hub_app.create_app(cfg=dict(hub_app.DEFAULTS), tokens=TOKENS, db_path=tmp_path / "hub.db", staff_pin=PIN)
+
+    async def guess_in_parallel():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://hub") as client:
+            t0 = time.monotonic()
+            replies = await asyncio.gather(*[client.post("/api/v1/groups", json={"name": "x", "people": 1},
+                                                         headers={"Authorization": f"Bearer guess{i}"}) for i in range(3)])
+            ok = await client.post("/api/v1/groups", json={"name": "x", "people": 1}, headers={"Authorization": f"Bearer {PIN}"})
+            return time.monotonic() - t0, [r.status_code for r in replies], ok.status_code
+
+    elapsed, codes, ok = asyncio.run(guess_in_parallel())
+    assert codes == [401, 401, 401] and elapsed >= 2.9  # 3 parallel guesses still take 3 s
+    assert ok == 200                                     # the right PIN is never held up
 
 
 def test_group_entries_need_the_staff_pin(make_client):

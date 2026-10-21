@@ -32,7 +32,7 @@ cp hub/config.example.yaml hub/config.yaml              # entry PC only
 python3 -c "import secrets; print(secrets.token_urlsafe(24))"   # run twice: one token per device
 ```
 
-- Entry PC `hub/.env`: `TOKEN_PC_A=<token A>`, `TOKEN_PC_B=<token B>` and `STAFF_PIN=<6+ characters>` (group form).
+- Entry PC `hub/.env`: `TOKEN_PC_A=<token A>`, `TOKEN_PC_B=<token B>` and `STAFF_PIN=<8+ random characters>` (group form).
 - Entry PC `.env` (repo root): `COUNTER_TOKEN=<token A>`. Exit PC `.env`: `COUNTER_TOKEN=<token B>`.
 - `counter/config.yaml`: entry PC `device: pc-a`, `gate: entry`, `hub_url: http://127.0.0.1:8000`.
   Exit PC `device: pc-b`, `gate: exit`, `hub_url: http://<entry PC address>:8000` (`hostname -I` on the entry PC).

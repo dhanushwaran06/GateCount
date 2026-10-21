@@ -41,7 +41,8 @@ ls models/yolo26n_640_openvino_model || .venv/bin/python tools/export_model.py
 ```
 
 - `counter/config.yaml`: `device`, `gate`, `hub_url`, and per camera `source`, line, segment, `direction`.
-- Tokens: the entry PC's `hub/.env` holds `TOKEN_PC_A`, `TOKEN_PC_B` and `STAFF_PIN` (group form). Each PC's `~/GateCount/.env` holds
+- Tokens: the entry PC's `hub/.env` holds `TOKEN_PC_A`, `TOKEN_PC_B` and `STAFF_PIN` (group form, 8+ random
+  characters; shorter PINs keep the form switched off). Each PC's `~/GateCount/.env` holds
   `COUNTER_TOKEN=` that PC's token. New tokens: `python3 -c "import secrets; print(secrets.token_urlsafe(24))"`.
 - Turn on **automatic login** for the user (Settings → Users), so everything starts after a power cut.
 - Set **Screen Blank: Never** (Settings → Power), or the gate monitors go black after 5 minutes.

@@ -33,6 +33,7 @@ log = logging.getLogger("hub")
 IST = timezone(timedelta(hours=5, minutes=30))  # Asia/Kolkata has no DST
 HERE = Path(__file__).resolve().parent
 STALE_CAMERA_S, OFFLINE_DEVICE_S, HEARTBEAT_S = 15, 30, 10
+MIN_PIN = 8  # staff PIN length; with one wrong guess/s an 8-char random PIN cannot be guessed in an event week
 DATE = r"^\d{4}-\d{2}-\d{2}$"
 DEFAULTS = {"entry_factor": 1.0, "exit_factor": 1.0, "open_hours": "09:00-21:00",
             "devices": {"pc-a": "entry", "pc-b": "exit"}}
@@ -244,6 +245,10 @@ def create_app(cfg=None, tokens=None, db_path=None, staff_pin=None):
     tokens = tokens if tokens is not None else device_tokens(cfg["devices"])
     hub = Hub(cfg, tokens, db_path or os.environ.get("HUB_DB", HERE / "data" / "counts.db"))
     staff_pin = staff_pin if staff_pin is not None else os.environ.get("STAFF_PIN", "")
+    if 0 < len(staff_pin) < MIN_PIN:
+        log.warning("STAFF_PIN is shorter than %d characters: the group form stays switched off", MIN_PIN)
+        staff_pin = ""
+    wrong_pin = asyncio.Lock()
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -309,10 +314,13 @@ def create_app(cfg=None, tokens=None, db_path=None, staff_pin=None):
 
     async def require_staff(authorization):
         if not staff_pin:
-            raise HTTPException(403, "group entries are switched off: set STAFF_PIN in hub/.env")
-        if not same_secret(authorization.removeprefix("Bearer ").strip(), staff_pin):
-            await asyncio.sleep(1)  # slows down PIN guessing
-            raise HTTPException(401, "wrong staff PIN")
+            raise HTTPException(403, f"group entries are switched off: set an {MIN_PIN}+ character STAFF_PIN in hub/.env")
+        if same_secret(authorization.removeprefix("Bearer ").strip(), staff_pin):
+            return
+        async with wrong_pin:  # one wrong guess per second for the whole hub, however many connections try
+            log.warning("wrong staff PIN on the group form")
+            await asyncio.sleep(1)
+        raise HTTPException(401, "wrong staff PIN")
 
     @app.get("/api/v1/groups")
     async def list_groups(date: str | None = Query(None, pattern=DATE)):
