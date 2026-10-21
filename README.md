@@ -126,6 +126,7 @@ The exit PC only needs to reach `http://<PC-A>:8000`. Set that once in the exit 
 - **Gate offline on the dashboard:** check that PC's counter log, its `hub_url`, and the network cable.
 - **Group form says it is locked:** 10 wrong PINs in a row lock **that device** out for 10 minutes; other
   phones keep working (`systemctl --user restart gatecount-hub` clears it). The hub log names the guessing device.
+  After 100 wrong PINs network-wide in 10 minutes, only phones that already entered the right PIN keep working.
 
 ## Hub on an internet server (later)
 

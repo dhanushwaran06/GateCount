@@ -260,6 +260,59 @@ def test_a_guesser_cannot_lock_out_other_devices(tmp_path, monkeypatch):
     assert asyncio.run(scenario()) == (429, 200)  # the guesser is locked out; the staff phone is not
 
 
+def _devices(app):
+    def device(ip):
+        return httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=(ip, 5000)), base_url="http://hub")
+    return device
+
+
+async def _try(client, pin):
+    r = await client.post("/api/v1/groups", json={"name": "x", "people": 1}, headers={"Authorization": f"Bearer {pin}"})
+    return r.status_code
+
+
+def test_hub_wide_ceiling_pauses_new_devices_but_not_logged_in_staff(tmp_path, monkeypatch):
+    monkeypatch.setattr(hub_app, "today", lambda: DAY)
+    monkeypatch.setattr(hub_app, "WRONG_PIN_DELAY_S", 0)
+    monkeypatch.setattr(hub_app, "GLOBAL_MAX_FAILS", 5)
+    app = hub_app.create_app(cfg=dict(hub_app.DEFAULTS), tokens=TOKENS, db_path=tmp_path / "hub.db", staff_pin=PIN)
+    device = _devices(app)
+
+    async def scenario():
+        async with device("10.0.0.20") as staff:
+            assert await _try(staff, PIN) == 200            # staff phone logs in before the attack
+            for i in range(5):                               # 5 guessers, one wrong PIN each
+                async with device(f"10.0.1.{i}") as g:
+                    assert await _try(g, "wrong") == 401
+            async with device("10.0.2.1") as newcomer:
+                blocked = await _try(newcomer, PIN)          # even the right PIN from a new device is paused
+            return blocked, await _try(staff, PIN)
+
+    assert asyncio.run(scenario()) == (429, 200)
+
+
+def test_device_table_cleanup_keeps_wrong_pin_counts(tmp_path, monkeypatch):
+    monkeypatch.setattr(hub_app, "today", lambda: DAY)
+    monkeypatch.setattr(hub_app, "WRONG_PIN_DELAY_S", 0)
+    monkeypatch.setattr(hub_app, "MAX_PIN_CLIENTS", 3)
+    app = hub_app.create_app(cfg=dict(hub_app.DEFAULTS), tokens=TOKENS, db_path=tmp_path / "hub.db", staff_pin=PIN)
+    device = _devices(app)
+
+    async def scenario():
+        async with device("10.0.0.66") as guesser:
+            for _ in range(hub_app.MAX_PIN_FAILS - 1):
+                await _try(guesser, "wrong")
+            codes = []
+            for i in range(3):                               # more devices than the table holds
+                async with device(f"10.0.1.{i}") as other:
+                    codes.append(await _try(other, "wrong"))
+            assert await _try(guesser, "wrong") == 401        # 10th strike still counted...
+            return codes, await _try(guesser, PIN)           # ...so the guesser is now locked out
+
+    codes, last = asyncio.run(scenario())
+    assert 429 in codes and last == 429                      # table full: new devices refused, counts kept
+
+
 def test_client_key_groups_ipv6_per_64():
     class Req:
         def __init__(self, host):

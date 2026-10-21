@@ -17,6 +17,7 @@ import math
 import os
 import sqlite3
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -37,8 +38,11 @@ STALE_CAMERA_S, OFFLINE_DEVICE_S, HEARTBEAT_S = 15, 30, 10
 # Staff PIN for the group form, limited PER DEVICE (client address; IPv6 per /64): every check queues (one wrong
 # guess per second), at most MAX_PIN_WAITING attempts may queue, and MAX_PIN_FAILS wrong PINs in a row lock that
 # device out for PIN_LOCK_S. A guesser can only lock out themselves, never the staff's phones.
+# Hub-wide ceiling: after GLOBAL_MAX_FAILS wrong PINs within PIN_LOCK_S, devices that have not entered the right
+# PIN in the last TRUST_S are turned away unchecked; staff phones that already logged in keep working.
 # Behind a reverse proxy all clients share the proxy's address: enable uvicorn --proxy-headers there.
 MIN_PIN, MAX_PIN_WAITING, MAX_PIN_FAILS, PIN_LOCK_S = 8, 3, 10, 600
+GLOBAL_MAX_FAILS, TRUST_S, MAX_PIN_CLIENTS = 100, 12 * 3600, 1000
 WRONG_PIN_DELAY_S = 1.0
 DATE = r"^\d{4}-\d{2}-\d{2}$"
 DEFAULTS = {"entry_factor": 1.0, "exit_factor": 1.0, "open_hours": "09:00-21:00",
@@ -264,7 +268,8 @@ def create_app(cfg=None, tokens=None, db_path=None, staff_pin=None):
     if 0 < len(staff_pin) < MIN_PIN:
         log.warning("STAFF_PIN is shorter than %d characters: the group form stays switched off", MIN_PIN)
         staff_pin = ""
-    pin_clients = {}  # client key -> {"lock", "waiting", "fails", "locked_until"}
+    pin_clients = {}  # client key -> {"lock", "waiting", "fails", "locked_until", "seen", "ok_at"}
+    recent_fails = deque(maxlen=GLOBAL_MAX_FAILS)  # monotonic times of the latest wrong PINs, hub-wide
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -331,11 +336,20 @@ def create_app(cfg=None, tokens=None, db_path=None, staff_pin=None):
     async def require_staff(request, authorization):
         if not staff_pin:
             raise HTTPException(403, f"group entries are switched off: set an {MIN_PIN}+ character STAFF_PIN in hub/.env")
-        if len(pin_clients) > 1000:  # forget idle devices so the table cannot grow without bound
-            for k in [k for k, c in pin_clients.items() if not c["waiting"] and c["locked_until"] < time.monotonic()]:
-                del pin_clients[k]
+        now = time.monotonic()
         key = client_key(request)
-        pin = pin_clients.setdefault(key, {"lock": asyncio.Lock(), "waiting": 0, "fails": 0, "locked_until": 0.0})
+        if key not in pin_clients and len(pin_clients) >= MAX_PIN_CLIENTS:
+            # forget only devices idle for a whole lock period, so their wrong-PIN counts cannot be reset early
+            for k in [k for k, c in pin_clients.items() if not c["waiting"] and now - c["seen"] > PIN_LOCK_S]:
+                del pin_clients[k]
+            if len(pin_clients) >= MAX_PIN_CLIENTS:
+                raise HTTPException(429, "too many devices are trying the PIN: try again in a few minutes")
+        pin = pin_clients.setdefault(key, {"lock": asyncio.Lock(), "waiting": 0, "fails": 0, "locked_until": 0.0,
+                                           "seen": now, "ok_at": None})
+        pin["seen"] = now
+        trusted = pin["ok_at"] is not None and now - pin["ok_at"] < TRUST_S
+        if not trusted and len(recent_fails) == GLOBAL_MAX_FAILS and now - recent_fails[0] < PIN_LOCK_S:
+            raise HTTPException(429, "too many wrong PINs on the network: new devices are paused for a few minutes")
 
         def locked():
             left = pin["locked_until"] - time.monotonic()
@@ -350,9 +364,13 @@ def create_app(cfg=None, tokens=None, db_path=None, staff_pin=None):
             async with pin["lock"]:  # the throttle comes BEFORE the check, so parallel guesses cannot skip it
                 locked()
                 if same_secret(authorization.removeprefix("Bearer ").strip(), staff_pin):
-                    pin["fails"] = 0
+                    pin["fails"], pin["ok_at"] = 0, time.monotonic()
                     return
                 pin["fails"] += 1
+                recent_fails.append(time.monotonic())
+                if len(recent_fails) == GLOBAL_MAX_FAILS and recent_fails[-1] - recent_fails[0] < PIN_LOCK_S:
+                    log.error("%d wrong staff PINs hub-wide in %d minutes: new devices paused",
+                              GLOBAL_MAX_FAILS, PIN_LOCK_S // 60)
                 log.warning("wrong staff PIN from %s (%d in a row)", key, pin["fails"])
                 if pin["fails"] >= MAX_PIN_FAILS:
                     pin["fails"], pin["locked_until"] = 0, time.monotonic() + PIN_LOCK_S
