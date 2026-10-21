@@ -124,8 +124,8 @@ The exit PC only needs to reach `http://<PC-A>:8000`. Set that once in the exit 
   `journalctl -k | grep -i usb` for `error -71` (signal or power too weak).
 - **Low fps:** laptops on battery or power-saver mode throttle hard. Use mains power. Target is 8 fps or more.
 - **Gate offline on the dashboard:** check that PC's counter log, its `hub_url`, and the network cable.
-- **Group form says it is locked:** 10 wrong PINs in a row lock it for 10 minutes (`systemctl --user restart
-  gatecount-hub` clears it). Check the hub log for repeated wrong PINs: someone may be guessing.
+- **Group form says it is locked:** 10 wrong PINs in a row lock **that device** out for 10 minutes; other
+  phones keep working (`systemctl --user restart gatecount-hub` clears it). The hub log names the guessing device.
 
 ## Hub on an internet server (later)
 

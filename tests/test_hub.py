@@ -241,6 +241,35 @@ def test_ten_wrong_pins_lock_the_form(make_client, monkeypatch):
     assert c.get("/api/v1/state").json()["in"] == 0
 
 
+def test_a_guesser_cannot_lock_out_other_devices(tmp_path, monkeypatch):
+    monkeypatch.setattr(hub_app, "today", lambda: DAY)
+    monkeypatch.setattr(hub_app, "WRONG_PIN_DELAY_S", 0)
+    app = hub_app.create_app(cfg=dict(hub_app.DEFAULTS), tokens=TOKENS, db_path=tmp_path / "hub.db", staff_pin=PIN)
+
+    async def scenario():
+        def device(ip):
+            return httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=(ip, 5000)), base_url="http://hub")
+        body = {"name": "x", "people": 3}
+        async with device("10.0.0.66") as guesser, device("10.0.0.20") as staff:
+            for i in range(hub_app.MAX_PIN_FAILS):
+                await guesser.post("/api/v1/groups", json=body, headers={"Authorization": f"Bearer guess{i}"})
+            locked = await guesser.post("/api/v1/groups", json=body, headers={"Authorization": f"Bearer {PIN}"})
+            ok = await staff.post("/api/v1/groups", json=body, headers={"Authorization": f"Bearer {PIN}"})
+            return locked.status_code, ok.status_code
+
+    assert asyncio.run(scenario()) == (429, 200)  # the guesser is locked out; the staff phone is not
+
+
+def test_client_key_groups_ipv6_per_64():
+    class Req:
+        def __init__(self, host):
+            self.client = type("C", (), {"host": host})()
+    key = lambda host: hub_app.client_key(Req(host))  # noqa: E731
+    assert key("192.168.1.7") == "192.168.1.7"
+    assert key("2001:db8:1:2::a") == key("2001:db8:1:2:ffff::1") == "2001:db8:1:2::/64"
+    assert key("testclient") == "testclient"
+
+
 def test_right_pin_resets_the_wrong_count(make_client, monkeypatch):
     monkeypatch.setattr(hub_app, "WRONG_PIN_DELAY_S", 0)
     c = make_client()

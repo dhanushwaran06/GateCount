@@ -10,6 +10,7 @@ import asyncio
 import csv
 import hmac
 import io
+import ipaddress
 import json
 import logging
 import math
@@ -33,8 +34,10 @@ log = logging.getLogger("hub")
 IST = timezone(timedelta(hours=5, minutes=30))  # Asia/Kolkata has no DST
 HERE = Path(__file__).resolve().parent
 STALE_CAMERA_S, OFFLINE_DEVICE_S, HEARTBEAT_S = 15, 30, 10
-# Staff PIN for the group form: every check is queued (one wrong guess per second, hub-wide), at most
-# MAX_PIN_WAITING attempts may queue, and MAX_PIN_FAILS wrong PINs in a row lock the form for PIN_LOCK_S.
+# Staff PIN for the group form, limited PER DEVICE (client address; IPv6 per /64): every check queues (one wrong
+# guess per second), at most MAX_PIN_WAITING attempts may queue, and MAX_PIN_FAILS wrong PINs in a row lock that
+# device out for PIN_LOCK_S. A guesser can only lock out themselves, never the staff's phones.
+# Behind a reverse proxy all clients share the proxy's address: enable uvicorn --proxy-headers there.
 MIN_PIN, MAX_PIN_WAITING, MAX_PIN_FAILS, PIN_LOCK_S = 8, 3, 10, 600
 WRONG_PIN_DELAY_S = 1.0
 DATE = r"^\d{4}-\d{2}-\d{2}$"
@@ -236,6 +239,16 @@ async def minute_writer(hub):
             log.exception("minute row write failed")
 
 
+def client_key(request):
+    """Who is guessing: the client address, with IPv6 grouped per /64 so address rotation does not help."""
+    host = request.client.host if request.client else "unknown"
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    return str(ipaddress.ip_network(f"{ip}/64", strict=False)) if ip.version == 6 else host
+
+
 def same_secret(given, expected):
     """Constant-time compare; bytes so a non-ASCII header cannot raise."""
     return bool(expected) and hmac.compare_digest(given.encode(), expected.encode())
@@ -251,8 +264,7 @@ def create_app(cfg=None, tokens=None, db_path=None, staff_pin=None):
     if 0 < len(staff_pin) < MIN_PIN:
         log.warning("STAFF_PIN is shorter than %d characters: the group form stays switched off", MIN_PIN)
         staff_pin = ""
-    pin_gate = asyncio.Lock()
-    pin = {"waiting": 0, "fails": 0, "locked_until": 0.0}
+    pin_clients = {}  # client key -> {"lock", "waiting", "fails", "locked_until"}
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -316,29 +328,36 @@ def create_app(cfg=None, tokens=None, db_path=None, staff_pin=None):
         return Response(buf.getvalue(), media_type="text/csv",
                         headers={"Content-Disposition": f'attachment; filename="counts-{date}.csv"'})
 
-    async def require_staff(authorization):
+    async def require_staff(request, authorization):
         if not staff_pin:
             raise HTTPException(403, f"group entries are switched off: set an {MIN_PIN}+ character STAFF_PIN in hub/.env")
+        if len(pin_clients) > 1000:  # forget idle devices so the table cannot grow without bound
+            for k in [k for k, c in pin_clients.items() if not c["waiting"] and c["locked_until"] < time.monotonic()]:
+                del pin_clients[k]
+        key = client_key(request)
+        pin = pin_clients.setdefault(key, {"lock": asyncio.Lock(), "waiting": 0, "fails": 0, "locked_until": 0.0})
+
         def locked():
             left = pin["locked_until"] - time.monotonic()
             if left > 0:
-                raise HTTPException(429, f"too many wrong PINs: the group form is locked for {left / 60:.0f} more minutes")
+                raise HTTPException(429, f"too many wrong PINs from this device: locked for {max(1, round(left / 60))} more minutes")
 
         locked()
         if pin["waiting"] >= MAX_PIN_WAITING:  # do not even check: a queue of guesses is an attack, not staff
             raise HTTPException(429, "too many attempts at once, try again in a few seconds")
         pin["waiting"] += 1
         try:
-            async with pin_gate:  # the throttle comes BEFORE the check, so parallel guesses cannot skip it
+            async with pin["lock"]:  # the throttle comes BEFORE the check, so parallel guesses cannot skip it
                 locked()
                 if same_secret(authorization.removeprefix("Bearer ").strip(), staff_pin):
                     pin["fails"] = 0
                     return
                 pin["fails"] += 1
-                log.warning("wrong staff PIN on the group form (%d in a row)", pin["fails"])
+                log.warning("wrong staff PIN from %s (%d in a row)", key, pin["fails"])
                 if pin["fails"] >= MAX_PIN_FAILS:
                     pin["fails"], pin["locked_until"] = 0, time.monotonic() + PIN_LOCK_S
-                    log.error("%d wrong staff PINs in a row: group form locked for %d minutes", MAX_PIN_FAILS, PIN_LOCK_S // 60)
+                    log.error("%d wrong staff PINs in a row from %s: that device is locked out for %d minutes",
+                              MAX_PIN_FAILS, key, PIN_LOCK_S // 60)
                 await asyncio.sleep(WRONG_PIN_DELAY_S)
         finally:
             pin["waiting"] -= 1
@@ -351,15 +370,15 @@ def create_app(cfg=None, tokens=None, db_path=None, staff_pin=None):
         return {"date": date, "total": sum(g["people"] for g in groups), "groups": groups}
 
     @app.post("/api/v1/groups")
-    async def add_group(group: GroupIn, authorization: str = Header("")):
-        await require_staff(authorization)
+    async def add_group(group: GroupIn, request: Request, authorization: str = Header("")):
+        await require_staff(request, authorization)
         gid = hub.add_group(group.name, group.people)
         await hub.notify()
         return {"id": gid}
 
     @app.delete("/api/v1/groups/{gid}")
-    async def delete_group(gid: int, authorization: str = Header("")):
-        await require_staff(authorization)
+    async def delete_group(gid: int, request: Request, authorization: str = Header("")):
+        await require_staff(request, authorization)
         if not hub.delete_group(gid):
             raise HTTPException(404, "no such group entry today")
         await hub.notify()
