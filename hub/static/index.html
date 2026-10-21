@@ -97,7 +97,8 @@
 
   <footer class="muted">
     <span id="factors"></span>
-    <a id="csv" href="/api/v1/export.csv">Download today's minute rows (CSV)</a>
+    <span><a href="/display">Big-screen display</a> · <a href="/groups">School group entries</a> ·
+      <a id="csv" href="/api/v1/export.csv">Download today's minute rows (CSV)</a></span>
   </footer>
 </main>
 
@@ -150,7 +151,8 @@ function render(withChart) {
   $("in").textContent = fmt.format(state.in);
   $("out").textContent = fmt.format(state.out);
   $("inside").textContent = fmt.format(state.inside);
-  $("in-note").textContent = `raw ${fmt.format(state.in_raw)} × ${state.entry_factor}`;
+  $("in-note").textContent = `raw ${fmt.format(state.in_raw)} × ${state.entry_factor}` +
+    (state.in_groups ? ` + ${fmt.format(state.in_groups)} in school groups` : "");
   $("out-note").textContent = `raw ${fmt.format(state.out_raw)} × ${state.exit_factor}`;
   $("factors").textContent = `Calibration: entry × ${state.entry_factor}, exit × ${state.exit_factor} · open ${state.open_hours}`;
   $("csv").href = "/api/v1/export.csv?date=" + state.date;

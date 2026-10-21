@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Powered Visitor Count</title>
+<style>
+  /* Big-screen visitor display for the entry monitor. Look carried over from the 2025 expo screen:
+     neon cyan + orange on near-black, Orbitron, split-flap total, scan line. Single dark theme on purpose. */
+  @font-face { font-family: "Orbitron"; src: url("/static/fonts/orbitron.woff2") format("woff2");
+               font-weight: 400 900; font-display: swap; }
+  :root {
+    color-scheme: dark;
+    --bg-1: #1a1a1a; --bg-2: #0a0a0a; --panel: rgba(12, 16, 17, 0.78);
+    --cyan: #00ffff; --cyan-dim: rgba(0, 255, 255, 0.55); --cyan-faint: rgba(0, 255, 255, 0.12);
+    --orange: #ff6b35; --ink: #e8fbfb; --muted: #7d8b8c; --grid: rgba(0, 255, 255, 0.10);
+    --font: "Orbitron", "Eurostile", "Segoe UI", system-ui, sans-serif;
+    --fh: min(27vh, 19vw); --fw: calc(var(--fh) * 0.66); --gap: calc(var(--fh) * 0.07);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: linear-gradient(135deg, var(--bg-1) 0%, var(--bg-2) 100%); color: var(--ink);
+         font-family: var(--font); overflow: hidden; position: relative; }
+  body.idle { cursor: none; }
+  body::before { content: ""; position: fixed; inset: 18px; border: 3px solid #333; border-radius: 16px; pointer-events: none;
+                 box-shadow: inset 0 0 50px rgba(0,0,0,.8), 0 0 30px rgba(0,255,255,.10); z-index: 1; }
+  body::after { content: ""; position: fixed; inset: 22px; pointer-events: none; z-index: 0;
+                background: radial-gradient(circle at 50% 40%, rgba(0,255,255,.06) 0%, transparent 65%); }
+  .scan { position: fixed; left: 0; right: 0; top: 0; height: 2px; z-index: 1; pointer-events: none;
+          background: linear-gradient(90deg, transparent, var(--cyan), transparent); animation: scan 4s linear infinite; opacity: .7; }
+  @keyframes scan { from { top: 0 } to { top: 100% } }
+
+  .screen { position: relative; z-index: 2; height: 100%; display: grid; grid-template-rows: auto auto 1fr auto;
+            padding: max(24px, 4.5vh) max(28px, 4vw) max(20px, 3.5vh); gap: max(8px, 1.6vh); }
+  header { text-align: center; }
+  h1 { margin: 0; font-weight: 900; font-size: max(22px, min(3.9vw, 7vh)); letter-spacing: .06em; color: var(--cyan);
+       text-shadow: 0 0 10px var(--cyan), 0 0 22px var(--cyan), 0 0 34px var(--cyan); }
+  h1 .ai { color: var(--orange); text-shadow: 0 0 10px var(--orange), 0 0 22px var(--orange), 0 0 34px var(--orange); }
+  .live { position: fixed; top: 34px; right: 40px; z-index: 3; display: flex; align-items: center; gap: 10px;
+          font-size: max(10px, min(.9vw, 1.6vh)); letter-spacing: .12em; color: var(--cyan-dim); }
+  .live i { width: max(12px, 1.3vh); height: max(12px, 1.3vh); border-radius: 50%; background: #00ff66; animation: pulse 2s infinite; }
+  .live.lost i { background: var(--orange); animation: none; box-shadow: 0 0 10px var(--orange); }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(0,255,102,.7) } 70% { box-shadow: 0 0 0 12px rgba(0,255,102,0) } 100% { box-shadow: 0 0 0 0 rgba(0,255,102,0) } }
+
+  /* hero: split-flap total */
+  .hero { display: grid; justify-items: center; gap: max(6px, 1.4vh); }
+  .label { font-size: max(11px, min(1.25vw, 2.2vh)); font-weight: 700; letter-spacing: .32em; color: var(--cyan-dim); text-transform: uppercase; }
+  .flaps { display: flex; gap: var(--gap); }
+  .flaps .sep { width: calc(var(--gap) * 1.6); }
+  .flap { position: relative; width: var(--fw); height: var(--fh); perspective: calc(var(--fh) * 4);
+          border: 2px solid var(--cyan); border-radius: 12px; background: #0d0d0d;
+          box-shadow: 0 10px 28px rgba(0,0,0,.85), inset 0 0 22px var(--cyan-faint); }
+  .flap::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 3px; transform: translateY(-1.5px);
+                 background: var(--cyan); box-shadow: 0 0 10px var(--cyan); z-index: 4; }
+  .half, .leaf { position: absolute; left: 0; right: 0; height: 50%; overflow: hidden; backface-visibility: hidden; }
+  .top { top: 0; border-radius: 10px 10px 0 0; transform-origin: 50% 100%; background: linear-gradient(160deg, #0a0a0a, #1a1a1a); }
+  .bottom { bottom: 0; border-radius: 0 0 10px 10px; transform-origin: 50% 0; background: linear-gradient(160deg, #1a1a1a, #0d0d0d); }
+  .half span, .leaf span { position: absolute; left: 0; right: 0; height: 200%; display: flex; align-items: center; justify-content: center;
+                           font-weight: 900; font-size: calc(var(--fh) * .74); line-height: 1; color: var(--cyan);
+                           text-shadow: 0 0 10px var(--cyan), 0 0 22px var(--cyan); font-variant-numeric: tabular-nums; }
+  .top span { top: 0; }
+  .bottom span { bottom: 0; }
+  .leaf { visibility: hidden; z-index: 3; }
+  .flap.flipping .leaf { visibility: visible; }
+  .flap.flipping .leaf.top { animation: fold-top .3s ease-in forwards; }
+  .flap.flipping .leaf.bottom { transform: rotateX(90deg); animation: fold-bottom .3s ease-out .3s forwards; }
+  @keyframes fold-top { from { transform: rotateX(0) } to { transform: rotateX(-90deg) } }
+  @keyframes fold-bottom { from { transform: rotateX(90deg) } to { transform: rotateX(0) } }
+  .flap.lead span { color: rgba(0,255,255,.28); text-shadow: none; }
+
+  /* lower band: stats | trend | goodies */
+  .band { display: grid; grid-template-columns: 1fr 2.3fr 1fr; gap: max(12px, 1.6vw); min-height: 0; }
+  .card { background: var(--panel); border: 2px solid var(--cyan-dim); border-radius: 12px; padding: max(10px, 1.6vh) max(12px, 1.2vw);
+          box-shadow: inset 0 0 22px var(--cyan-faint), 0 8px 24px rgba(0,0,0,.7); min-width: 0; min-height: 0; }
+  .stack { display: grid; gap: max(12px, 1.6vw); grid-auto-rows: 1fr; min-height: 0; }
+  .stat { display: grid; align-content: center; gap: 4px; }
+  .stat .k { font-size: max(10px, min(1vw, 1.8vh)); font-weight: 700; letter-spacing: .24em; color: var(--cyan-dim); }
+  .stat .v { font-size: max(28px, min(4.6vw, 8.5vh)); font-weight: 900; line-height: 1.05; color: var(--cyan);
+             text-shadow: 0 0 10px var(--cyan), 0 0 22px var(--cyan); font-variant-numeric: tabular-nums; transition: transform .25s; }
+  .stat.orange .v { color: var(--orange); text-shadow: 0 0 10px var(--orange), 0 0 22px var(--orange); }
+  .stat .n { font-size: max(10px, min(.85vw, 1.5vh)); color: var(--muted); letter-spacing: .08em; min-height: 1.2em; }
+  .stat .v.bump { transform: scale(1.06); }
+  .trend { display: grid; grid-template-rows: auto 1fr; gap: 6px; }
+  .trend svg { width: 100%; height: 100%; display: block; overflow: visible; }
+  .trend .axis text { fill: var(--muted); font-family: var(--font); font-size: max(11px, min(.75vw, 1.4vh)); }
+  .glow { filter: drop-shadow(0 0 6px var(--cyan)) drop-shadow(0 0 14px rgba(0,255,255,.5)); }
+
+  footer { text-align: center; color: #888; font-weight: 700; font-size: max(11px, min(1.35vw, 2.4vh)); letter-spacing: .04em; }
+  footer .coe { color: var(--orange); font-weight: 900; text-shadow: 0 0 10px var(--orange); }
+  footer .org { color: var(--cyan); text-shadow: 0 0 5px var(--cyan); }
+
+  @media (max-width: 900px) {  /* phones and small windows: scroll instead of fixed kiosk layout */
+    body { overflow: auto; } html, body { height: auto; }
+    .screen { height: auto; } .band { grid-template-columns: 1fr; } .trend svg { height: 240px; }
+    :root { --fh: min(22vh, 24vw); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .scan { display: none; } .live i { animation: none; }
+    .flap.flipping .leaf { animation: none; visibility: hidden; }
+  }
+</style>
+</head>
+<body>
+<div class="scan" aria-hidden="true"></div>
+<div class="live" id="live"><i></i><span id="live-text">CONNECTING</span></div>
+
+<div class="screen">
+  <header><h1><span class="ai">AI POWERED</span> VISITOR COUNT</h1></header>
+
+  <section class="hero" aria-live="polite">
+    <div class="label">Total visitors today</div>
+    <div class="flaps" id="flaps" role="img" aria-label="Total visitors today"></div>
+  </section>
+
+  <section class="band">
+    <div class="stack">
+      <div class="card stat"><span class="k">INSIDE NOW</span><span class="v" id="inside">0</span><span class="n" id="inside-n"></span></div>
+      <div class="card stat orange"><span class="k">EXITED</span><span class="v" id="out">0</span><span class="n"></span></div>
+    </div>
+    <div class="card trend">
+      <span class="label" style="letter-spacing:.24em">People inside through the day</span>
+      <svg id="chart" aria-label="People inside through the day"></svg>
+    </div>
+    <div class="stack">
+      <div class="card stat"><span class="k">PEAK TODAY</span><span class="v" id="peak">0</span><span class="n" id="peak-n"></span></div>
+      <div class="card stat orange"><span class="k">LAST HOUR</span><span class="v" id="hour">0</span><span class="n">new visitors</span></div>
+    </div>
+  </section>
+
+  <footer>Developed by <span class="coe">Center of Excellence</span> - <span class="org">ABC Polytechnic</span></footer>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const fmt = new Intl.NumberFormat("en-IN");
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const DIGITS = 6;
+let state = null, stateAt = 0, rows = [], historyDate = null, drawnOnce = false;
+
+// ---------------------------------------------------------------- split-flap total
+const flaps = [];
+(function buildFlaps() {
+  const box = $("flaps");
+  for (let i = 0; i < DIGITS; i++) {
+    if (i === DIGITS - 3) { const sep = document.createElement("div"); sep.className = "sep"; box.appendChild(sep); }
+    const el = document.createElement("div");
+    el.className = "flap lead";
+    el.innerHTML = ["half top", "half bottom", "leaf top", "leaf bottom"].map((c) => `<div class="${c}"><span>0</span></div>`).join("");
+    box.appendChild(el);
+    flaps.push({ el, shown: "0", target: "0", busy: false });
+  }
+})();
+function face(f, part, d) { f.el.querySelector(`.${part.replace(" ", ".")} span`).textContent = d; }
+function run(f, delay) {
+  if (f.busy || f.shown === f.target) return;
+  f.busy = true;
+  setTimeout(() => {
+    const from = f.shown, to = f.target;
+    face(f, "half top", to); face(f, "half bottom", from); face(f, "leaf top", from); face(f, "leaf bottom", to);
+    f.el.classList.remove("flipping"); void f.el.offsetWidth; f.el.classList.add("flipping");
+    setTimeout(() => {
+      face(f, "half bottom", to); f.el.classList.remove("flipping");
+      f.shown = to; f.busy = false; run(f, 0);   // a newer target may have arrived meanwhile
+    }, REDUCED ? 0 : 620);
+  }, REDUCED ? 0 : delay);
+}
+function showTotal(n) {
+  const s = String(Math.min(Math.max(n, 0), 10 ** DIGITS - 1)).padStart(DIGITS, "0");
+  const firstSig = s.search(/[1-9]/);
+  let k = 0;
+  s.split("").forEach((d, i) => {
+    const f = flaps[i];
+    f.el.classList.toggle("lead", firstSig === -1 ? i < DIGITS - 1 : i < firstSig);
+    if (d !== f.target) { f.target = d; run(f, (k++) * 90); }
+  });
+  $("flaps").setAttribute("aria-label", `Total visitors today: ${n}`);
+}
+
+// ---------------------------------------------------------------- counting-up stats
+function tween(id, to) {
+  const el = $(id), from = Number(el.dataset.v || 0);
+  if (from === to) return;
+  el.dataset.v = to;
+  if (to > from) { el.classList.add("bump"); setTimeout(() => el.classList.remove("bump"), 250); }
+  if (REDUCED) { el.textContent = fmt.format(to); return; }
+  const t0 = performance.now(), dur = 700;
+  const step = (t) => {
+    const p = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - p, 3);
+    el.textContent = fmt.format(Math.round(from + (to - from) * e));
+    if (p < 1 && Number(el.dataset.v) === to) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+// ---------------------------------------------------------------- data: SSE (live) + minute rows (trend)
+function connect() {
+  const es = new EventSource("/api/v1/stream");
+  es.onopen = loadHistory;
+  es.onmessage = (e) => {
+    state = JSON.parse(e.data); stateAt = Date.now();
+    if (state.date !== historyDate) loadHistory();
+    render();
+  };
+}
+async function loadHistory() {
+  try {
+    const h = await (await fetch("/api/v1/history")).json();
+    rows = h.rows; historyDate = h.date;
+    render();
+  } catch (e) { /* hub unreachable: the live badge says so */ }
+}
+const toMin = (t) => { const [h, m] = t.split(":").map(Number); return h * 60 + m; };
+const hhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+function nowMinIST() { const d = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60000); return d.getHours() * 60 + d.getMinutes(); }
+
+function render() {
+  if (!state) return;
+  showTotal(state.in);
+  tween("inside", state.inside);
+  tween("out", state.out);
+  const exitDown = state.devices.some((d) => d.gate === "exit" && !d.online);
+  $("inside-n").textContent = exitDown ? "exit gate syncing…" : "";
+
+  // goodies from today's minute rows
+  const today = state.date === historyDate ? rows : [];
+  let peak = { v: state.inside, t: nowMinIST() };
+  for (const r of today) if (r.inside > peak.v) peak = { v: r.inside, t: toMin(r.minute) };
+  tween("peak", peak.v);
+  $("peak-n").textContent = peak.v ? `at ${hhmm(peak.t)}` : "";
+  const cutoff = nowMinIST() - 60;
+  const before = today.filter((r) => toMin(r.minute) <= cutoff).pop();
+  tween("hour", Math.max(0, state.in - (before ? before.in : 0)));
+  drawChart();
+}
+
+// ---------------------------------------------------------------- neon trend (5-minute rolling average of INSIDE)
+function series() {
+  const raw = (state && state.date === historyDate ? rows : []).map((r) => ({ t: toMin(r.minute), v: r.inside }));
+  if (state && state.date === historyDate) {
+    const t = nowMinIST();
+    if (!raw.length || raw[raw.length - 1].t < t) raw.push({ t, v: state.inside });
+  }
+  return raw.map((p, i) => {
+    let sum = 0, n = 0;
+    for (let j = i; j >= 0 && raw[j].t > p.t - 5; j--) { sum += raw[j].v; n++; }
+    return { t: p.t, v: sum / n };
+  });
+}
+function niceMax(v) {
+  if (v <= 10) return 10;
+  const step = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const k of [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (k * step >= v) return k * step;
+  return 10 * step;
+}
+function drawChart() {
+  const svg = $("chart");
+  const W = svg.clientWidth || 800, H = svg.clientHeight || 260;
+  if (W < 50 || H < 50) return;
+  const pad = { l: Math.max(52, W * 0.045), r: 18, t: 12, b: Math.max(26, H * 0.09) };
+  const pts = series();
+  const [o1, o2] = (state ? state.open_hours : "09:00-21:00").split("-").map(toMin);
+  const t0 = Math.min(o1, ...pts.map((p) => p.t)), t1 = Math.max(o2, ...pts.map((p) => p.t));
+  const yMax = niceMax(Math.max(0, ...pts.map((p) => p.v)) * 1.15);
+  const x = (t) => pad.l + (t - t0) / (t1 - t0) * (W - pad.l - pad.r);
+  const y = (v) => H - pad.b - v / yMax * (H - pad.t - pad.b);
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  let g = `<defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#00ffff" stop-opacity=".35"/><stop offset="1" stop-color="#00ffff" stop-opacity="0"/></linearGradient></defs><g class="axis">`;
+  const ticks = yMax % 4 === 0 ? 4 : 5;
+  for (let i = 0; i <= ticks; i++) {
+    const v = yMax * i / ticks;
+    g += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)" stroke-width="1"/>`;
+    g += `<text x="${pad.l - 10}" y="${y(v) + 4}" text-anchor="end">${fmt.format(Math.round(v))}</text>`;
+  }
+  const every = W < 600 ? 180 : 120, first = Math.ceil(t0 / 60) * 60;
+  for (let t = first; t <= t1; t += 60) if (!((t - first) % every)) g += `<text x="${x(t)}" y="${H - 4}" text-anchor="middle">${hhmm(t)}</text>`;
+  g += `</g>`;
+  if (pts.length) {
+    const line = pts.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`).join("");
+    const last = pts[pts.length - 1];
+    g += `<path d="${line}L${x(last.t).toFixed(1)},${y(0)}L${x(pts[0].t).toFixed(1)},${y(0)}Z" fill="url(#fill)"/>`;
+    g += `<path id="line" class="glow" d="${line}" fill="none" stroke="#00ffff" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>`;
+    g += `<circle cx="${x(last.t)}" cy="${y(last.v)}" r="7" fill="#ff6b35" class="glow">
+            ${REDUCED ? "" : '<animate attributeName="r" values="6;10;6" dur="1.6s" repeatCount="indefinite"/>'}</circle>`;
+  } else {
+    g += `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="var(--muted)" font-family="Orbitron" font-size="16">Doors open soon</text>`;
+  }
+  svg.innerHTML = g;
+  const path = $("line");
+  if (path && !drawnOnce && !REDUCED) {  // draw the line in once, on first load
+    const len = path.getTotalLength();
+    path.style.strokeDasharray = len; path.style.strokeDashoffset = len;
+    path.getBoundingClientRect();
+    path.style.transition = "stroke-dashoffset 2.2s ease-out"; path.style.strokeDashoffset = "0";
+    drawnOnce = true;
+  } else if (path) drawnOnce = true;
+}
+
+// ---------------------------------------------------------------- live badge, idle cursor, keep screen awake
+setInterval(() => {
+  const ok = state && Date.now() - stateAt < 20000;  // the hub pushes at least every 10 s
+  $("live").classList.toggle("lost", !ok);
+  $("live-text").textContent = ok ? "LIVE" : "RECONNECTING";
+}, 1000);
+let idleTimer;
+addEventListener("mousemove", () => { document.body.classList.remove("idle"); clearTimeout(idleTimer); idleTimer = setTimeout(() => document.body.classList.add("idle"), 3000); });
+async function stayAwake() { try { await navigator.wakeLock?.request("screen"); } catch (e) { /* needs localhost or https */ } }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") stayAwake(); });
+addEventListener("resize", drawChart);
+setInterval(loadHistory, 60000);
+stayAwake();
+connect();
+loadHistory();
+</script>
+</body>
+</html>

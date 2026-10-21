@@ -25,6 +25,7 @@ import yaml
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 log = logging.getLogger("hub")
@@ -75,6 +76,12 @@ class CountsIn(BaseModel):
     _check_ts = field_validator("sent_at")(aware_iso)
 
 
+class GroupIn(BaseModel):
+    """A group (e.g. a school) that entered WITHOUT walking through the entry cameras; added to IN as-is."""
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
+    people: int = Field(ge=1, le=1000)
+
+
 class Hub:
     """Latest message per (device, date), persisted so a hub restart shows the last totals immediately."""
 
@@ -89,6 +96,8 @@ class Hub:
                                                 inside INTEGER, PRIMARY KEY (date, minute));
             CREATE TABLE IF NOT EXISTS device_state (device TEXT, date TEXT, record TEXT,
                                                      PRIMARY KEY (device, date));
+            CREATE TABLE IF NOT EXISTS group_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, at TEXT,
+                                                      name TEXT, people INTEGER);
         """)
         self.latest = {(d, dt): json.loads(r) for d, dt, r in self.db.execute("SELECT * FROM device_state")}
         self.version = 0
@@ -107,14 +116,33 @@ class Hub:
         return True
 
     def totals(self, date):
-        """(in_shown, out_shown, inside, raw) for a date."""
-        raw = {"entry": 0, "exit": 0}
+        """(in_shown, out_shown, inside, raw) for a date. Group entries are exact head counts: not calibrated."""
+        raw = {"entry": 0, "exit": 0, "groups": self.group_total(date)}
         for (_, d), rec in self.latest.items():
             if d == date:
                 raw[rec["gate"]] += sum(c["count"] for c in rec["cameras"].values())
-        in_shown = calibrate(raw["entry"], self.cfg["entry_factor"])
+        in_shown = calibrate(raw["entry"], self.cfg["entry_factor"]) + raw["groups"]
         out_shown = calibrate(raw["exit"], self.cfg["exit_factor"])
         return in_shown, out_shown, max(0, in_shown - out_shown), raw
+
+    def group_total(self, date):
+        return self.db.execute("SELECT COALESCE(SUM(people), 0) FROM group_entries WHERE date = ?", (date,)).fetchone()[0]
+
+    def groups(self, date):
+        rows = self.db.execute("SELECT id, at, name, people FROM group_entries WHERE date = ? ORDER BY id", (date,))
+        return [{"id": i, "at": at, "name": name, "people": n} for i, at, name, n in rows]
+
+    def add_group(self, name, people):
+        cur = self.db.execute("INSERT INTO group_entries (date, at, name, people) VALUES (?, ?, ?, ?)",
+                              (today(), datetime.now(IST).strftime("%H:%M"), name, people))
+        self.db.commit()
+        return cur.lastrowid
+
+    def delete_group(self, gid):
+        """Undo a mistaken entry; only today's entries can be removed."""
+        n = self.db.execute("DELETE FROM group_entries WHERE id = ? AND date = ?", (gid, today())).rowcount
+        self.db.commit()
+        return n > 0
 
     def state(self, now=None):
         now = time.time() if now is None else now
@@ -141,14 +169,15 @@ class Hub:
             devices.append({"device": device, "gate": gate, "online": age is not None and age <= OFFLINE_DEVICE_S,
                             "last_seen_s": None if age is None else round(age, 1), "cameras": cameras})
         return {"date": date, "in": in_shown, "out": out_shown, "inside": inside,
-                "in_raw": raw["entry"], "out_raw": raw["exit"], "entry_factor": self.cfg["entry_factor"],
+                "in_raw": raw["entry"], "in_groups": raw["groups"], "out_raw": raw["exit"],
+                "entry_factor": self.cfg["entry_factor"],
                 "exit_factor": self.cfg["exit_factor"], "open_hours": self.cfg["open_hours"],
                 "stale_after_s": STALE_CAMERA_S, "offline_after_s": OFFLINE_DEVICE_S, "devices": devices}
 
     def write_minute(self, at: datetime) -> bool:
         """Write the row for the minute containing `at` (IST). Skipped until a counter has reported that day."""
         date = at.date().isoformat()
-        if not any(d == date for _, d in self.latest):
+        if not any(d == date for _, d in self.latest) and not self.group_total(date):
             return False
         self.db.execute("INSERT OR REPLACE INTO minutes VALUES (?, ?, ?, ?, ?)",
                         (date, at.strftime("%H:%M"), *self.totals(date)[:3]))
@@ -203,12 +232,18 @@ async def minute_writer(hub):
             log.exception("minute row write failed")
 
 
-def create_app(cfg=None, tokens=None, db_path=None):
+def same_secret(given, expected):
+    """Constant-time compare; bytes so a non-ASCII header cannot raise."""
+    return bool(expected) and hmac.compare_digest(given.encode(), expected.encode())
+
+
+def create_app(cfg=None, tokens=None, db_path=None, staff_pin=None):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     load_env(HERE / ".env")
     cfg = cfg or load_config(Path(os.environ.get("HUB_CONFIG", HERE / "config.yaml")))
     tokens = tokens if tokens is not None else device_tokens(cfg["devices"])
     hub = Hub(cfg, tokens, db_path or os.environ.get("HUB_DB", HERE / "data" / "counts.db"))
+    staff_pin = staff_pin if staff_pin is not None else os.environ.get("STAFF_PIN", "")
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -229,7 +264,7 @@ def create_app(cfg=None, tokens=None, db_path=None):
     @app.post("/api/v1/counts")
     async def post_counts(msg: CountsIn, authorization: str = Header("")):
         token = hub.tokens.get(msg.device, "")
-        if not token or not hmac.compare_digest(authorization.removeprefix("Bearer ").strip(), token):
+        if not same_secret(authorization.removeprefix("Bearer ").strip(), token):
             raise HTTPException(401, "bad or missing device token")
         if msg.gate != cfg["devices"][msg.device]:
             raise HTTPException(409, f"{msg.device} is configured for gate '{cfg['devices'][msg.device]}'")
@@ -272,6 +307,34 @@ def create_app(cfg=None, tokens=None, db_path=None):
         return Response(buf.getvalue(), media_type="text/csv",
                         headers={"Content-Disposition": f'attachment; filename="counts-{date}.csv"'})
 
+    async def require_staff(authorization):
+        if not staff_pin:
+            raise HTTPException(403, "group entries are switched off: set STAFF_PIN in hub/.env")
+        if not same_secret(authorization.removeprefix("Bearer ").strip(), staff_pin):
+            await asyncio.sleep(1)  # slows down PIN guessing
+            raise HTTPException(401, "wrong staff PIN")
+
+    @app.get("/api/v1/groups")
+    async def list_groups(date: str | None = Query(None, pattern=DATE)):
+        date = date or today()
+        groups = hub.groups(date)
+        return {"date": date, "total": sum(g["people"] for g in groups), "groups": groups}
+
+    @app.post("/api/v1/groups")
+    async def add_group(group: GroupIn, authorization: str = Header("")):
+        await require_staff(authorization)
+        gid = hub.add_group(group.name, group.people)
+        await hub.notify()
+        return {"id": gid}
+
+    @app.delete("/api/v1/groups/{gid}")
+    async def delete_group(gid: int, authorization: str = Header("")):
+        await require_staff(authorization)
+        if not hub.delete_group(gid):
+            raise HTTPException(404, "no such group entry today")
+        await hub.notify()
+        return {"deleted": gid}
+
     @app.get("/healthz")
     async def healthz():
         return {"ok": True}
@@ -280,4 +343,13 @@ def create_app(cfg=None, tokens=None, db_path=None):
     async def dashboard():
         return FileResponse(HERE / "static" / "index.html")
 
+    @app.get("/display")
+    async def display():
+        return FileResponse(HERE / "static" / "display.html")
+
+    @app.get("/groups")
+    async def groups_page():
+        return FileResponse(HERE / "static" / "groups.html")
+
+    app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")  # fonts
     return app

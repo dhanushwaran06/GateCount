@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from hub import app as hub_app
 
 TOKENS = {"pc-a": "tok-a", "pc-b": "tok-b"}
+PIN = "staff-123"
 DAY = "2026-11-02"
 
 
@@ -16,9 +17,9 @@ DAY = "2026-11-02"
 def make_client(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_app, "today", lambda: DAY)
 
-    def make(entry_factor=1.0, exit_factor=1.0):
+    def make(entry_factor=1.0, exit_factor=1.0, staff_pin=PIN):
         cfg = dict(hub_app.DEFAULTS, entry_factor=entry_factor, exit_factor=exit_factor)
-        return TestClient(hub_app.create_app(cfg=cfg, tokens=TOKENS, db_path=tmp_path / "hub.db"))
+        return TestClient(hub_app.create_app(cfg=cfg, tokens=TOKENS, db_path=tmp_path / "hub.db", staff_pin=staff_pin))
     return make
 
 
@@ -179,3 +180,55 @@ def test_dashboard_and_healthz(make_client):
     assert c.get("/healthz").json() == {"ok": True}
     r = c.get("/")
     assert r.status_code == 200 and "EventSource" in r.text
+
+
+def add_group(client, people, name="Govt. School", pin=PIN):
+    return client.post("/api/v1/groups", json={"name": name, "people": people}, headers={"Authorization": f"Bearer {pin}"})
+
+
+def test_group_entries_add_to_in_and_inside_without_calibration(make_client):
+    c = make_client(entry_factor=2.0)
+    post(c, msg(counts=(10,)))                      # cameras: 10 raw x 2.0 = 20
+    post(c, msg("pc-b", "exit", counts=(5,)))
+    assert add_group(c, 30).status_code == 200      # +30 exactly
+    s = c.get("/api/v1/state").json()
+    assert (s["in"], s["in_groups"], s["out"], s["inside"]) == (50, 30, 5, 45)
+    listed = c.get("/api/v1/groups").json()
+    assert listed["total"] == 30 and listed["groups"][0]["name"] == "Govt. School"
+
+
+def test_group_entry_can_be_undone(make_client):
+    c = make_client()
+    gid = add_group(c, 40).json()["id"]
+    assert c.get("/api/v1/state").json()["in"] == 40
+    assert c.delete(f"/api/v1/groups/{gid}", headers={"Authorization": f"Bearer {PIN}"}).status_code == 200
+    assert c.get("/api/v1/state").json()["in"] == 0
+    assert c.delete(f"/api/v1/groups/{gid}", headers={"Authorization": f"Bearer {PIN}"}).status_code == 404
+
+
+def test_group_entries_need_the_staff_pin(make_client):
+    c = make_client()
+    assert add_group(c, 10, pin="wrong").status_code == 401
+    assert c.post("/api/v1/groups", json={"name": "x", "people": 1}).status_code == 401
+    assert make_client(staff_pin="").post("/api/v1/groups", json={"name": "x", "people": 1}).status_code == 403
+    assert c.get("/api/v1/state").json()["in"] == 0
+
+
+@pytest.mark.parametrize("body", [{"name": "x", "people": 0}, {"name": "x", "people": 1001},
+                                  {"name": "   ", "people": 5}, {"name": "x" * 81, "people": 5}])
+def test_bad_group_entries_are_rejected(make_client, body):
+    c = make_client()
+    assert c.post("/api/v1/groups", json=body, headers={"Authorization": f"Bearer {PIN}"}).status_code == 422
+
+
+def test_minute_rows_include_groups(make_client):
+    c = make_client()
+    add_group(c, 25)                                 # no counter has reported yet: groups alone still write a row
+    assert c.app.state.hub.write_minute(datetime(2026, 11, 2, 10, 0, 30, tzinfo=hub_app.IST))
+    assert c.get(f"/api/v1/history?date={DAY}").json()["rows"] == [{"minute": "10:00", "in": 25, "out": 0, "inside": 25}]
+
+
+def test_display_and_group_pages_are_served(make_client):
+    c = make_client()
+    for path in ("/display", "/groups", "/static/fonts/orbitron.woff2"):
+        assert c.get(path).status_code == 200, path

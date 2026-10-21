@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>School Group Entries</title>
+<style>
+  /* Staff form: same tokens as the staff dashboard (index.html). */
+  :root {
+    color-scheme: light;
+    --surface-0: #f3f2ef; --surface-1: #fcfcfb; --border: #e3e2de;
+    --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #77766f;
+    --accent: #2a78d6; --accent-ink: #ffffff; --good-text: #006300; --critical-text: #b42727;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark; --surface-0: #111110; --surface-1: #1a1a19; --border: #2e2e2c;
+      --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #96958c;
+      --accent: #3987e5; --good-text: #3fc43f; --critical-text: #f07b7b;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark; --surface-0: #111110; --surface-1: #1a1a19; --border: #2e2e2c;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #96958c;
+    --accent: #3987e5; --good-text: #3fc43f; --critical-text: #f07b7b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--surface-0); color: var(--text-primary); font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 20px 16px 40px; display: grid; gap: 16px; }
+  h1 { font-size: 22px; margin: 0; }
+  h2 { font-size: 16px; margin: 0 0 8px; }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .note { color: var(--text-secondary); margin: 6px 0 0; }
+  form { display: grid; gap: 12px; }
+  label { display: grid; gap: 4px; font-weight: 600; font-size: 14px; }
+  input { font: inherit; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-0); color: var(--text-primary); }
+  input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .row { display: grid; grid-template-columns: 1fr 140px; gap: 12px; }
+  button { font: 600 16px system-ui, sans-serif; padding: 12px; border: 0; border-radius: 8px; background: var(--accent); color: var(--accent-ink); cursor: pointer; }
+  button.ghost { background: transparent; color: var(--critical-text); border: 1px solid var(--border); padding: 6px 10px; font-size: 14px; }
+  button:disabled { opacity: .5; cursor: wait; }
+  .msg { min-height: 1.4em; font-weight: 600; }
+  .msg.ok { color: var(--good-text); } .msg.err { color: var(--critical-text); }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+  th { font-size: 13px; color: var(--text-secondary); }
+  td.num, th.num { text-align: right; }
+  .total { display: flex; justify-content: space-between; align-items: baseline; }
+  .total b { font-size: 28px; }
+  footer { font-size: 14px; color: var(--text-muted); display: flex; gap: 16px; flex-wrap: wrap; }
+  a { color: var(--accent); }
+  @media (max-width: 420px) { .row { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>School group entries</h1>
+    <p class="note">Only for groups that entered <b>without</b> walking through the entry gate cameras.
+      Everyone who walks through the gate is already counted. The number is added to the visitor total as typed.</p>
+  </header>
+
+  <section class="card">
+    <form id="form" autocomplete="off">
+      <label for="pin">Staff PIN<input id="pin" type="password" required autocomplete="current-password"></label>
+      <div class="row">
+        <label for="name">School / group name<input id="name" maxlength="80" required placeholder="e.g. Govt. Higher Secondary School"></label>
+        <label for="people">People<input id="people" type="number" min="1" max="1000" step="1" required inputmode="numeric"></label>
+      </div>
+      <button id="add" type="submit">Add group</button>
+      <div class="msg" id="msg" role="status"></div>
+    </form>
+  </section>
+
+  <section class="card">
+    <div class="total"><h2>Today</h2><span><b id="total">0</b> people in <span id="count">0</span> groups</span></div>
+    <table>
+      <thead><tr><th>Time</th><th>Group</th><th class="num">People</th><th></th></tr></thead>
+      <tbody id="list"><tr><td colspan="4" class="note">No groups yet today.</td></tr></tbody>
+    </table>
+  </section>
+
+  <footer><a href="/">Staff dashboard</a><a href="/display">Big-screen display</a></footer>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const fmt = new Intl.NumberFormat("en-IN");
+try { $("pin").value = localStorage.getItem("gatecount-pin") || ""; } catch (e) { /* storage blocked */ }
+
+function say(text, ok) { const m = $("msg"); m.textContent = text; m.className = "msg " + (ok ? "ok" : "err"); }
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+async function problem(r) {
+  if (r.status === 401) return "Wrong staff PIN.";
+  if (r.status === 403) return "Group entries are switched off on the hub (no STAFF_PIN set).";
+  if (r.status === 422) return "Check the name (1–80 characters) and people (1–1000).";
+  return `The hub answered ${r.status}. Try again.`;
+}
+
+async function load() {
+  try {
+    const d = await (await fetch("/api/v1/groups")).json();
+    $("total").textContent = fmt.format(d.total);
+    $("count").textContent = d.groups.length;
+    $("list").innerHTML = d.groups.length ? d.groups.slice().reverse().map((g) =>
+      `<tr><td>${esc(g.at)}</td><td>${esc(g.name)}</td><td class="num">${fmt.format(g.people)}</td>
+       <td class="num"><button class="ghost" data-id="${g.id}" data-label="${esc(g.name)} (${g.people})">Undo</button></td></tr>`).join("")
+      : `<tr><td colspan="4" class="note">No groups yet today.</td></tr>`;
+  } catch (e) { say("Cannot reach the hub. Check the network and reload.", false); }
+}
+
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const pin = $("pin").value.trim(), name = $("name").value.trim(), people = Number($("people").value);
+  $("add").disabled = true;
+  try {
+    const r = await fetch("/api/v1/groups", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${pin}` },
+                                              body: JSON.stringify({ name, people }) });
+    if (!r.ok) { say(await problem(r), false); return; }
+    try { localStorage.setItem("gatecount-pin", pin); } catch (err) { /* storage blocked */ }
+    say(`Added ${fmt.format(people)} people (${name}).`, true);
+    $("name").value = ""; $("people").value = ""; $("name").focus();
+    load();
+  } catch (err) { say("Cannot reach the hub. Nothing was added.", false); }
+  finally { $("add").disabled = false; }
+});
+
+$("list").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-id]");
+  if (!b || !confirm(`Remove ${b.dataset.label} from today's total?`)) return;
+  const r = await fetch(`/api/v1/groups/${b.dataset.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${$("pin").value.trim()}` } });
+  if (r.ok) { say(`Removed ${b.dataset.label}.`, true); load(); } else say(await problem(r), false);
+});
+
+load();
+setInterval(load, 15000);
+</script>
+</body>
+</html>
