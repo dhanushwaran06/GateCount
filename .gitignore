@@ -1,0 +1,39 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secrets and per-site config
+.env
+counter/config.yaml
+hub/config.yaml
+
+# Runtime data
+state/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Models (downloaded / exported per PC)
+*.pt
+*.onnx
+*_openvino_model/
+runs/
+
+# Test media (never commit video)
+*.mp4
+*.avi
+*.mkv
+
+# Local dirs
+models/
+samples/
+
+# Hub runtime data
+hub/data*/
+
+# Tooling output
+.playwright-mcp/

@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Book Fair Count</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%232a78d6'/%3E%3Cpath d='M7 22l6-7 5 4 7-9' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: light;
+    --surface-0: #f3f2ef; --surface-1: #fcfcfb; --border: #e3e2de;
+    --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #77766f;
+    --grid: #e3e2de; --series-1: #2a78d6; --series-1-fill: rgba(42, 120, 214, 0.12);
+    --good: #0ca30c; --good-text: #006300; --critical: #d03b3b; --critical-text: #b42727;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-0: #111110; --surface-1: #1a1a19; --border: #2e2e2c;
+      --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #96958c;
+      --grid: #2e2e2c; --series-1: #3987e5; --series-1-fill: rgba(57, 135, 229, 0.16);
+      --good-text: #3fc43f; --critical-text: #f07b7b;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-0: #111110; --surface-1: #1a1a19; --border: #2e2e2c;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #96958c;
+    --grid: #2e2e2c; --series-1: #3987e5; --series-1-fill: rgba(57, 135, 229, 0.16);
+    --good-text: #3fc43f; --critical-text: #f07b7b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--surface-0); color: var(--text-primary);
+         font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+  h1 { font-size: 20px; margin: 0; }
+  .muted { color: var(--text-muted); }
+  .secondary { color: var(--text-secondary); }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .tiles { display: grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 16px; }
+  .tile .label { font-size: 13px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-secondary); }
+  .tile .value { font-size: clamp(40px, 9vw, 72px); font-weight: 700; line-height: 1.05; font-variant-numeric: tabular-nums; }
+  .tile.hero .value { font-size: clamp(52px, 12vw, 96px); }
+  .tile .note { font-size: 13px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  .tile .note.warn { color: var(--critical-text); font-weight: 600; font-size: 14px; }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  .chart-wrap { position: relative; }
+  svg { display: block; width: 100%; height: 260px; overflow: visible; }
+  .axis text { fill: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .tip { position: absolute; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border);
+         border-radius: 8px; padding: 6px 10px; font-size: 13px; white-space: nowrap; display: none;
+         box-shadow: 0 2px 8px rgba(0,0,0,.12); font-variant-numeric: tabular-nums; }
+  .device { display: grid; gap: 8px; padding: 12px 0; border-top: 1px solid var(--border); }
+  .device:first-of-type { border-top: 0; padding-top: 0; }
+  .device-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .status { font-weight: 600; white-space: nowrap; }
+  .status.ok { color: var(--good-text); }
+  .status.bad { color: var(--critical-text); }
+  .cams { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+  .cam { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .cam.bad { border-color: var(--critical); }
+  footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 13px; }
+  a { color: var(--series-1); }
+  @media (max-width: 640px) {
+    .tiles { grid-template-columns: 1fr 1fr; }
+    .tile.hero { grid-column: 1 / -1; order: -1; }
+    svg { height: 220px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Book Fair — People Count</h1>
+    <div><span id="date" class="secondary"></span> · <span id="live" class="status bad">● Connecting…</span></div>
+  </header>
+
+  <section class="tiles">
+    <div class="card tile"><div class="label">In</div><div class="value" id="in">–</div><div class="note" id="in-note"></div></div>
+    <div class="card tile"><div class="label">Out</div><div class="value" id="out">–</div><div class="note" id="out-note"></div></div>
+    <div class="card tile hero"><div class="label">Inside now</div><div class="value" id="inside">–</div><div class="note" id="inside-note">In − Out, never below 0</div></div>
+  </section>
+
+  <section class="card">
+    <h2>People inside today <span class="muted">(5-minute average)</span></h2>
+    <div class="chart-wrap">
+      <svg id="chart" role="img" aria-label="People inside through the day"></svg>
+      <div class="tip" id="tip"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Gates and cameras</h2>
+    <div id="health"><span class="muted">Waiting for data…</span></div>
+  </section>
+
+  <footer class="muted">
+    <span id="factors"></span>
+    <a id="csv" href="/api/v1/export.csv">Download today's minute rows (CSV)</a>
+  </footer>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const fmt = new Intl.NumberFormat("en-IN");
+let state = null, stateAt = 0, rows = [], historyDate = null;
+
+// ---------------------------------------------------------------- live state over SSE (auto-reconnects)
+function connect() {
+  const es = new EventSource("/api/v1/stream");
+  es.onopen = () => { loadHistory(); };
+  es.onmessage = (e) => {
+    state = JSON.parse(e.data); stateAt = Date.now();
+    if (state.date !== historyDate) loadHistory();
+    render(true);
+  };
+  es.onerror = () => setLive(false, "Reconnecting…");
+}
+
+async function loadHistory() {
+  try {
+    const r = await fetch("/api/v1/history");
+    const h = await r.json();
+    rows = h.rows; historyDate = h.date;
+    drawChart();
+  } catch (e) { /* hub unreachable: SSE handler shows it; retry on next tick */ }
+}
+
+function setLive(ok, text) {
+  const el = $("live");
+  el.className = "status " + (ok ? "ok" : "bad");
+  el.textContent = (ok ? "● " : "✕ ") + text;
+}
+
+function ago(s) {
+  if (s == null) return "never";
+  if (s < 60) return Math.round(s) + " s ago";
+  if (s < 3600) return Math.round(s / 60) + " min ago";
+  return Math.round(s / 3600) + " h ago";
+}
+
+function render(withChart) {
+  if (!state) return;
+  const elapsed = (Date.now() - stateAt) / 1000;
+  // the hub pushes at least every 10 s; silence beyond 20 s means we lost the hub, not the gates
+  setLive(elapsed < 20, elapsed < 20 ? "Live" : "Hub not responding");
+  $("date").textContent = state.date;
+  $("in").textContent = fmt.format(state.in);
+  $("out").textContent = fmt.format(state.out);
+  $("inside").textContent = fmt.format(state.inside);
+  $("in-note").textContent = `raw ${fmt.format(state.in_raw)} × ${state.entry_factor}`;
+  $("out-note").textContent = `raw ${fmt.format(state.out_raw)} × ${state.exit_factor}`;
+  $("factors").textContent = `Calibration: entry × ${state.entry_factor}, exit × ${state.exit_factor} · open ${state.open_hours}`;
+  $("csv").href = "/api/v1/export.csv?date=" + state.date;
+
+  // INSIDE needs both gates: say so when one is not reporting instead of showing a confident wrong number
+  const silent = state.devices.filter((d) => d.last_seen_s == null || d.last_seen_s + elapsed > state.offline_after_s)
+    .map((d) => (d.gate === "entry" ? "Entry" : "Exit"));
+  const note = $("inside-note");
+  note.className = "note" + (silent.length ? " warn" : "");
+  note.textContent = silent.length ? `✕ ${silent.join(" and ")} gate not reporting: Inside may be wrong` : "In − Out, never below 0";
+
+  $("health").innerHTML = state.devices.map((d) => {
+    const seen = d.last_seen_s == null ? null : d.last_seen_s + elapsed;
+    const online = seen != null && seen <= state.offline_after_s;
+    const cams = d.cameras.map((c) => {
+      const age = c.frame_age_s == null ? null : c.frame_age_s + elapsed;
+      const ok = online && age != null && age <= state.stale_after_s;
+      return `<div class="cam ${ok ? "" : "bad"}">
+        <b>${esc(c.id)}</b> <span class="status ${ok ? "ok" : "bad"}">${ok ? "● Live" : "✕ Stale"}</span><br>
+        count <b>${fmt.format(c.count)}</b> · wrong-way ${fmt.format(c.wrong_way)}<br>
+        <span class="muted">${c.fps.toFixed(1)} fps · frame ${ago(age)}</span></div>`;
+    }).join("");
+    return `<div class="device">
+      <div class="device-head"><b>${esc(d.device)}</b><span class="secondary">${d.gate === "entry" ? "Entry gate (IN)" : "Exit gate (OUT)"}</span>
+        <span class="status ${online ? "ok" : "bad"}">${online ? "● Online" : "✕ Offline"}</span>
+        <span class="muted">last seen ${ago(seen)}</span></div>
+      ${cams ? `<div class="cams">${cams}</div>` : `<span class="muted">No messages yet</span>`}</div>`;
+  }).join("");
+  if (withChart) drawChart();
+}
+
+function esc(s) { return String(s).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`); }
+
+// ---------------------------------------------------------------- trend chart (inline SVG)
+const toMin = (hhmm) => { const [h, m] = hhmm.split(":").map(Number); return h * 60 + m; };
+const hhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+let points = [], geom = null;
+
+function series() {
+  // minute rows + the live value as the newest point, then a trailing 5-minute rolling average
+  const raw = rows.map((r) => ({ t: toMin(r.minute), v: r.inside }));
+  if (state && state.date === historyDate) {
+    const now = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60000); // IST
+    const t = now.getHours() * 60 + now.getMinutes();
+    if (!raw.length || raw[raw.length - 1].t < t) raw.push({ t, v: state.inside });
+  }
+  return raw.map((p, i) => {
+    let sum = 0, n = 0;
+    for (let j = i; j >= 0 && raw[j].t > p.t - 5; j--) { sum += raw[j].v; n++; }
+    return { t: p.t, raw: p.v, avg: sum / n };
+  });
+}
+
+function niceMax(v) {
+  if (v <= 10) return 10;
+  const step = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const k of [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (k * step >= v) return k * step;
+  return 10 * step;
+}
+
+function drawChart() {
+  const svg = $("chart");
+  const W = svg.clientWidth || 600, H = svg.clientHeight || 260;
+  const pad = { l: 44, r: 12, t: 10, b: 26 };
+  points = series();
+  const [o1, o2] = (state ? state.open_hours : "09:00-21:00").split("-").map(toMin);
+  const t0 = Math.min(o1, ...points.map((p) => p.t)), t1 = Math.max(o2, ...points.map((p) => p.t));
+  const yMax = niceMax(Math.max(0, ...points.map((p) => p.avg)) * 1.1);
+  const x = (t) => pad.l + (t - t0) / (t1 - t0) * (W - pad.l - pad.r);
+  const y = (v) => H - pad.b - v / yMax * (H - pad.t - pad.b);
+  geom = { x, y, pad, W, H };
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+
+  let g = `<g class="axis">`;
+  const ticks = yMax % 4 === 0 ? 4 : 5;  // niceMax values divide by 4 or 5, so every gridline is a whole number
+  for (let i = 0; i <= ticks; i++) {
+    const v = yMax * i / ticks, yy = y(v);
+    g += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${yy}" y2="${yy}" stroke="var(--grid)" stroke-width="1"/>`;
+    g += `<text x="${pad.l - 8}" y="${yy + 4}" text-anchor="end">${fmt.format(Math.round(v))}</text>`;
+  }
+  const every = W < 500 ? 180 : 120;  // hour labels: every 3 h on phones, 2 h otherwise
+  for (let t = Math.ceil(t0 / 60) * 60; t <= t1; t += 60) {
+    if ((t - Math.ceil(t0 / 60) * 60) % every) continue;
+    g += `<text x="${x(t)}" y="${H - 6}" text-anchor="middle">${hhmm(t)}</text>`;
+  }
+  g += `</g>`;
+
+  if (points.length) {
+    const line = points.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.avg).toFixed(1)}`).join("");
+    const last = points[points.length - 1];
+    g += `<path d="${line}L${x(last.t).toFixed(1)},${y(0)}L${x(points[0].t).toFixed(1)},${y(0)}Z" fill="var(--series-1-fill)"/>`;
+    g += `<path d="${line}" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    g += `<circle cx="${x(last.t)}" cy="${y(last.avg)}" r="4" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2"/>`;
+  } else {
+    g += `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="var(--text-muted)">No data yet today</text>`;
+  }
+  g += `<line id="cross" y1="${pad.t}" y2="${H - pad.b}" stroke="var(--text-muted)" stroke-width="1" visibility="hidden"/>`;
+  g += `<circle id="cross-dot" r="5" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2" visibility="hidden"/>`;
+  svg.innerHTML = g;
+}
+
+function hover(clientX) {
+  if (!points.length || !geom) return;
+  const svg = $("chart"), rect = svg.getBoundingClientRect(), px = clientX - rect.left;
+  let best = points[0];
+  for (const p of points) if (Math.abs(geom.x(p.t) - px) < Math.abs(geom.x(best.t) - px)) best = p;
+  const cx = geom.x(best.t), cy = geom.y(best.avg);
+  const cross = $("cross"), dot = $("cross-dot"), tip = $("tip");
+  cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("visibility", "visible");
+  dot.setAttribute("cx", cx); dot.setAttribute("cy", cy); dot.setAttribute("visibility", "visible");
+  tip.innerHTML = `<b>${hhmm(best.t)}</b><br>${fmt.format(Math.round(best.avg))} inside (5-min avg)<br><span class="muted">${fmt.format(best.raw)} at that minute</span>`;
+  tip.style.display = "block";
+  const left = Math.min(Math.max(cx - tip.offsetWidth / 2, 0), rect.width - tip.offsetWidth);
+  tip.style.left = left + "px";
+  tip.style.top = Math.max(0, cy - tip.offsetHeight - 12) + "px";
+}
+function unhover() {
+  $("tip").style.display = "none";
+  for (const id of ["cross", "cross-dot"]) { const el = $(id); if (el) el.setAttribute("visibility", "hidden"); }
+}
+$("chart").addEventListener("pointermove", (e) => hover(e.clientX));
+$("chart").addEventListener("pointerleave", unhover);
+
+window.addEventListener("resize", drawChart);
+setInterval(() => render(false), 1000);  // tick "last seen N s ago" and the live/offline badges
+setInterval(loadHistory, 60000);    // a new minute row lands every minute
+connect();
+loadHistory();
+</script>
+</body>
+</html>

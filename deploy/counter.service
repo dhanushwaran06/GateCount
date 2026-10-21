@@ -1,0 +1,17 @@
+# systemd USER service, installed by deploy/install.sh (it fills in @ROOT@ and @ARGS@).
+# Runs inside the desktop session: the live window needs the screen, and the session grants camera access.
+[Unit]
+Description=GateCount counter (cameras -> counts)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+WorkingDirectory=@ROOT@
+ExecStart=@ROOT@/.venv/bin/python -m counter.main @ARGS@
+Restart=always
+RestartSec=3
+# SIGTERM -> counter saves state/<date>.json and sends final totals before exiting
+TimeoutStopSec=20
+
+[Install]
+WantedBy=graphical-session.target

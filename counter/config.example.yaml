@@ -1,0 +1,39 @@
+# Counter config. Copy to counter/config.yaml on each PC and edit. Only this file differs between PCs.
+
+device: pc-a            # pc-a (entry) / pc-b (exit) — must match a token on the hub
+gate: entry             # entry (counts IN) / exit (counts OUT)
+hub_url: http://192.168.1.10:8000   # LAN address of the hub (https://... also works)
+token_env: COUNTER_TOKEN            # env var holding this device's bearer token (or put it in .env)
+model: models/yolo26n_640_openvino_model
+state_dir: state
+device_hint: cpu        # inference device: cpu, intel:gpu (OpenVINO), or 0 for CUDA with a .pt model
+
+# Applied with v4l2-ctl every time a camera opens (settings reset on replug). Per-camera `v4l2` overrides.
+v4l2:
+  exposure_dynamic_framerate: 0   # don't drop fps in dim light
+  power_line_frequency: 1         # 1 = 50 Hz (India mains) anti-flicker
+
+cameras:
+  # source: device index (0), stable path (/dev/v4l/by-id/...-video-index0 or /dev/v4l/by-path/...),
+  #         or a video file (add `loop: true` to repeat it).
+  # line_y: counting line, fraction of frame height (0 = top). Set it live with --debug (click).
+  # x_min/x_max: this camera's share of the line, fractions of frame width. The two cameras' segments
+  #         must meet without gap or overlap on the ground (set live with --debug, right-click).
+  # direction: travel direction in the image that is the gate's correct direction: down / up.
+  # margin: hysteresis, fraction of frame height (0.04 = 29 px at 720p).
+  - id: c1
+    source: /dev/v4l/by-id/usb-CAMERA1-video-index0
+    line_y: 0.5
+    x_min: 0.0
+    x_max: 0.55
+    direction: down
+    margin: 0.04
+    conf: 0.35
+  - id: c2
+    source: /dev/v4l/by-id/usb-CAMERA2-video-index0
+    line_y: 0.5
+    x_min: 0.45
+    x_max: 1.0
+    direction: down
+    margin: 0.04
+    conf: 0.35

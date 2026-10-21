@@ -1,0 +1,14 @@
+# Hub config. Copy to hub/config.yaml. Restart the hub after editing (totals are kept).
+
+# Calibration: shown = round(raw x factor). Set factor = hand-clicker count / system count for that gate
+# over the same 10 minutes. Change before opening if you can: earlier minute rows keep the old factor.
+entry_factor: 1.0
+exit_factor: 1.0
+
+# Opening hours (IST) — only sets the trend chart's x-axis. Days always roll over at midnight IST.
+open_hours: "09:00-21:00"
+
+# Device id -> gate. Each device's token comes from the env var TOKEN_<ID> (pc-a -> TOKEN_PC_A), see .env.
+devices:
+  pc-a: entry
+  pc-b: exit

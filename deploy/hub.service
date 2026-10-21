@@ -1,0 +1,14 @@
+# systemd USER service, installed by deploy/install.sh on the PC that hosts the dashboard (entry PC).
+# Same code as the Docker image; Docker is only needed when the hub moves to the internet server.
+[Unit]
+Description=GateCount hub (API + dashboard on port 8000)
+After=network-online.target
+
+[Service]
+WorkingDirectory=@ROOT@
+ExecStart=@ROOT@/.venv/bin/uvicorn app:create_app --factory --app-dir hub --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 3 --no-access-log
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

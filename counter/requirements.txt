@@ -1,0 +1,13 @@
+# Counter (PC-A / PC-B). Python 3.12.
+# Install with CPU-only torch (avoids multi-GB CUDA/XPU wheels; inference runs on OpenVINO anyway):
+#   uv pip install -r counter/requirements.txt --torch-backend=cpu
+# Plain pip equivalent:
+#   pip install -r counter/requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+ultralytics==8.4.178
+torch==2.14.1
+torchvision==0.29.1
+openvino==2026.4.1
+opencv-python==5.0.0.93
+lap==0.5.13          # ByteTrack assignment; pinned so Ultralytics never auto-installs it at runtime
+pyyaml==6.0.3
+httpx==0.28.1
