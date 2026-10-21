@@ -20,10 +20,15 @@ AI agents → [`AGENTS.md`](AGENTS.md) / [`CLAUDE.md`](CLAUDE.md).
 
 | PC | Runs | Screen |
 | --- | --- | --- |
-| **PC-A, entry** | counter (`pc-a`, counts IN) + hub on port 8000 | Monitor 1: live camera window (full screen). Monitor 2: dashboard `http://localhost:8000` |
+| **PC-A, entry** | counter (`pc-a`, counts IN) + hub on port 8000 | Monitor 1: live camera window (full screen). Monitor 2: big-screen display `http://localhost:8000/display` |
 | **PC-B, exit** | counter (`pc-b`, counts OUT) → posts to PC-A's hub | Live camera window |
 
-Any phone or laptop on the same network can open the dashboard at `http://<PC-A address>:8000`.
+Pages on the hub (any phone or laptop on the same network, `http://<PC-A address>:8000/...`):
+
+- `/display`: the public big-screen display (2025 expo look: neon, split-flap total, trend). Press F11 for full screen.
+- `/`: staff dashboard with gate and camera health.
+- `/groups`: staff form for **school groups that entered without walking through the entry cameras**.
+  Needs the `STAFF_PIN` from `hub/.env`; the head count is added to IN as typed, and can be undone.
 
 ## One-time setup per PC (needs internet for ~2 minutes)
 
@@ -36,9 +41,10 @@ ls models/yolo26n_640_openvino_model || .venv/bin/python tools/export_model.py
 ```
 
 - `counter/config.yaml`: `device`, `gate`, `hub_url`, and per camera `source`, line, segment, `direction`.
-- Tokens: the entry PC's `hub/.env` holds `TOKEN_PC_A` and `TOKEN_PC_B`. Each PC's `~/GateCount/.env` holds
+- Tokens: the entry PC's `hub/.env` holds `TOKEN_PC_A`, `TOKEN_PC_B` and `STAFF_PIN` (group form). Each PC's `~/GateCount/.env` holds
   `COUNTER_TOKEN=` that PC's token. New tokens: `python3 -c "import secrets; print(secrets.token_urlsafe(24))"`.
 - Turn on **automatic login** for the user (Settings → Users), so everything starts after a power cut.
+- Set **Screen Blank: Never** (Settings → Power), or the gate monitors go black after 5 minutes.
 
 ## Start, stop, logs
 
@@ -98,7 +104,7 @@ The exit PC only needs to reach `http://<PC-A>:8000`. Set that once in the exit 
 
 1. Mount cameras rigidly, as high as possible, about 70° from the floor, looking at people's backs.
 2. Plug in and run `tools/probe_cams.py`: every camera listed, `1280x720 MJPG`, about 15 fps or more.
-3. Put the live window on monitor 1, the dashboard on monitor 2 (`http://localhost:8000`, browser full screen F11).
+3. Put the live window on monitor 1, the big-screen display on monitor 2 (`http://localhost:8000/display`, F11).
 4. Live window: set each line across the walkway and split the two segments where the views overlap
    (a person of average height walking along the seam must be counted once). Press `s`.
 5. Walk test: 20 crossings per camera with a clicker, including pairs and a short queue. Wrong way must flash red.
@@ -106,9 +112,9 @@ The exit PC only needs to reach `http://<PC-A>:8000`. Set that once in the exit 
 
 ### Every morning before opening
 
-1. PCs on (automatic login starts everything). Dashboard: both gates **Online**, all cameras **Live**.
+1. PCs on (automatic login starts everything). Staff dashboard (`/`): both gates **Online**, all cameras **Live**.
 2. Walk through once at each gate: counts go up on the dashboard within 2 s.
-3. `tools/reset_day.py` on both PCs. Dashboard shows 0 / 0 / 0.
+3. `tools/reset_day.py` on both PCs. Display shows 000 000, staff dashboard 0 / 0 / 0. Groups start at 0 too.
 
 ## Troubleshooting
 

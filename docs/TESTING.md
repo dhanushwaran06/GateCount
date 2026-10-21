@@ -32,11 +32,12 @@ cp hub/config.example.yaml hub/config.yaml              # entry PC only
 python3 -c "import secrets; print(secrets.token_urlsafe(24))"   # run twice: one token per device
 ```
 
-- Entry PC `hub/.env`: `TOKEN_PC_A=<token A>` and `TOKEN_PC_B=<token B>`.
+- Entry PC `hub/.env`: `TOKEN_PC_A=<token A>`, `TOKEN_PC_B=<token B>` and `STAFF_PIN=<6+ characters>` (group form).
 - Entry PC `.env` (repo root): `COUNTER_TOKEN=<token A>`. Exit PC `.env`: `COUNTER_TOKEN=<token B>`.
 - `counter/config.yaml`: entry PC `device: pc-a`, `gate: entry`, `hub_url: http://127.0.0.1:8000`.
   Exit PC `device: pc-b`, `gate: exit`, `hub_url: http://<entry PC address>:8000` (`hostname -I` on the entry PC).
 - Two cameras per PC: `x_min: 0.0, x_max: 0.55` for the first, `x_min: 0.45, x_max: 1.0` for the second.
+- Settings → Power → **Screen Blank: Never**, and Settings → Users → **Automatic Login** on (both PCs).
 
 **Only one PC available?** Configure it as the entry PC. Everything except the two-PC tests (T9d) works.
 
@@ -118,7 +119,18 @@ Watch the dashboard while someone crosses. **Pass:** IN (or OUT) goes up within 
 
 `.venv/bin/python tools/reset_day.py` on every PC. **Pass:** dashboard shows 0 / 0 / 0, both gates Online.
 
-### T11. One-hour run (optional, recommended)
+### T11. Big-screen display and school groups
+
+1. On the entry PC open `http://localhost:8000/display`, press F11. **Pass:** the total flips within 2 s of a
+   counted crossing, INSIDE / EXITED / PEAK / LAST HOUR update, the trend draws, LIVE dot is green.
+2. Stop the hub for 30 s (`systemctl --user stop gatecount-hub`, then `start`). **Pass:** the dot turns orange
+   (RECONNECTING) and recovers by itself; the numbers come back unchanged.
+3. Open `http://<entry PC>:8000/groups` on a phone. Add a group with a wrong PIN: **pass** = "Wrong staff PIN",
+   nothing added. With the right PIN add 25 people: the display total goes up by 25 within 2 s. Press Undo:
+   it goes back down.
+4. Leave the display for 10 minutes. **Pass:** the screen does not blank (Screen Blank: Never).
+
+### T12. One-hour run (optional, recommended)
 
 Leave both PCs running for an hour with people passing now and then.
 **Pass:** `systemctl --user status gatecount-counter` memory stays flat (about 0.5–1 GB),
@@ -138,6 +150,7 @@ Leave both PCs running for an hour with people passing now and then.
 | T8 latency | | | |
 | T9 a–e faults | | | which passed |
 | T10 reset | | | |
+| T11 display + groups | | | |
 
 ## Known issues (as of 2026-10-21)
 

@@ -9,6 +9,8 @@ An AI people counter for a book fair (expo hall) with **one big entry gate and o
 
 - Entry gate counts **IN**. Exit gate counts **OUT**.
 - Dashboard shows **IN, OUT, INSIDE** (INSIDE = IN − OUT, never below 0) and a **smoothed occupancy trend**.
+- A public **big-screen display** (`/display`) carries over the 2025 expo look (neon, split-flap total); staff can
+  add **school groups** that did not walk through the entry cameras (`/groups`, staff PIN).
 - Goal: a **slow, steady, believable occupancy trend through the day**. Exact counts are NOT required.
   Target accuracy: each gate within ±10% of a manual clicker count after calibration.
 - Latency target: a crossing shows on the dashboard within **2 s**.
@@ -64,13 +66,14 @@ Exit:  C3,C4 ─USB─► PC-B  counter ─HTTPS POST─┘                │
 service on port 8000 (plain HTTP, no internet at runtime); the exit PC posts to it over the LAN. Moving the hub
 to the internet server later is a `hub_url` change only, so code must not assume either. Hub judges
 offline/stale by its own receive time (PC clocks may drift offline). The entry gate has two monitors:
-the counter's live window full screen (`--debug --fullscreen`) and the dashboard (`http://localhost:8000`).
+the counter's live window full screen (`--debug --fullscreen`) and the big-screen display (`/display`).
 
 1. **counter** — the SAME Python program on both PCs; only `config.yaml` differs.
    One thread per camera + one sender thread + one state-writer thread.
 2. **hub** — one FastAPI app in one Docker container: receives counts, keeps latest state in memory,
    writes one SQLite row per minute, serves the dashboard and a live SSE stream.
-3. **dashboard** — one static HTML file served by the hub. Plain JS, no build step.
+3. **dashboard** — static HTML pages served by the hub, plain JS, no build step: staff dashboard `/`,
+   big-screen display `/display`, school-group form `/groups`. Fonts are bundled (no internet at runtime).
 
 ## 6. Tech stack (use these, do not swap without asking)
 
@@ -109,7 +112,8 @@ Licence note: Ultralytics is AGPL-3.0. Fine for this internal event deployment.
 - Counter sends **within 1 s of any change** (at most 1 message/s) plus a **heartbeat every 10 s**.
 - Counter keeps totals in memory and writes `state/<date>.json` **atomically** (temp file + `os.replace`)
   every 2 s from a separate thread. On start, it loads today's file if present; a new date starts at 0.
-- Hub calibration factors per gate live in hub config: `IN_shown = round(IN_raw × entry_factor)`,
+- Hub calibration factors per gate live in hub config: `IN_shown = round(IN_raw × entry_factor) + groups`
+  (school-group head counts are exact, never calibrated),
   `OUT_shown = round(OUT_raw × exit_factor)`, `INSIDE = max(0, IN_shown − OUT_shown)`.
 - Hub writes one row per minute to SQLite: date, minute, in_shown, out_shown, inside.
 - Trend line = 5-minute rolling average of INSIDE, computed in the dashboard from the minute rows.
@@ -140,7 +144,9 @@ Licence note: Ultralytics is AGPL-3.0. Fine for this internal event deployment.
 | GET | `/api/v1/history?date=YYYY-MM-DD` | Minute rows for the trend |
 | GET | `/api/v1/export.csv?date=YYYY-MM-DD` | Minute rows as CSV |
 | GET | `/healthz` | Liveness |
-| GET | `/` | Dashboard |
+| GET | `/` | Staff dashboard |
+| GET | `/display`, `/groups` | Big-screen display; school-group form |
+| GET/POST/DELETE | `/api/v1/groups[/{id}]` | List / add / undo today's school groups (POST/DELETE need `STAFF_PIN`) |
 
 Health rules shown on the dashboard: a camera is **stale** if its `last_frame_at` is > 15 s old;
 a device is **offline** if no message for > 30 s. Show "last seen N s ago" for each.
