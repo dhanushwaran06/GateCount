@@ -13,6 +13,9 @@ tests/     pytest suite (no camera needed)
 
 Privacy: frames never leave the PC and are never written to disk. Only counts are sent.
 
+**Start here:** testing on the office PCs → [`docs/TESTING.md`](docs/TESTING.md).
+AI agents → [`AGENTS.md`](AGENTS.md) / [`CLAUDE.md`](CLAUDE.md).
+
 ## What runs where (fully local)
 
 | PC | Runs | Screen |
@@ -25,8 +28,7 @@ Any phone or laptop on the same network can open the dashboard at `http://<PC-A 
 ## One-time setup per PC (needs internet for ~2 minutes)
 
 ```bash
-# copy this folder to ~/GateCount (USB stick, or: rsync -a --exclude .venv GateCount/ user@pc:GateCount/)
-cd ~/GateCount
+git clone https://github.com/dhanushwaran06/GateCount ~/GateCount && cd ~/GateCount   # private repo: ask for access
 uv venv --python 3.12 .venv
 uv pip install -r counter/requirements.txt -r hub/requirements.txt --torch-backend=cpu
 .venv/bin/python tools/probe_cams.py      # lists cameras: copy their /dev/v4l/by-id/... paths into config
@@ -125,6 +127,6 @@ Then point both counters' `hub_url` at it. Nothing else changes.
 ## Development
 
 ```bash
-.venv/bin/pytest                                   # 43 tests, no camera needed
+.venv/bin/pytest                                   # 49 tests, no camera needed
 .venv/bin/python tools/simulate.py --device pc-b --gate exit --token <TOKEN_PC_B>   # fake exit counter
 ```

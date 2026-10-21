@@ -1,3 +1,6 @@
+> **Status 2026-10-21:** this is the original build plan and has been carried out (phases 0–4 built and
+> verified; testing in progress per `docs/TESTING.md`). Agents: do not rebuild from it. Current truth: `CLAUDE.md`.
+
 # Build Prompt — Book Fair People Counter
 
 Paste everything below this line into your Claude agent, with CLAUDE.md in the repo root.
