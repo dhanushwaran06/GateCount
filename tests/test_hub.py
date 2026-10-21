@@ -214,21 +214,40 @@ def test_short_staff_pin_keeps_the_form_off(make_client):
     assert add_group(c, 10, pin="1234").status_code == 403
 
 
-def test_wrong_pins_are_serialised_across_connections(tmp_path, monkeypatch):
+def test_pin_checks_are_throttled_even_for_parallel_guesses(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_app, "today", lambda: DAY)
+    monkeypatch.setattr(hub_app, "WRONG_PIN_DELAY_S", 0.3)
     app = hub_app.create_app(cfg=dict(hub_app.DEFAULTS), tokens=TOKENS, db_path=tmp_path / "hub.db", staff_pin=PIN)
 
-    async def guess_in_parallel():
+    async def burst():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://hub") as client:
             t0 = time.monotonic()
+            pins = [f"guess{i}" for i in range(6)] + [PIN]   # the right PIN hidden in a parallel burst
             replies = await asyncio.gather(*[client.post("/api/v1/groups", json={"name": "x", "people": 1},
-                                                         headers={"Authorization": f"Bearer guess{i}"}) for i in range(3)])
-            ok = await client.post("/api/v1/groups", json={"name": "x", "people": 1}, headers={"Authorization": f"Bearer {PIN}"})
-            return time.monotonic() - t0, [r.status_code for r in replies], ok.status_code
+                                                         headers={"Authorization": f"Bearer {p}"}) for p in pins])
+            return time.monotonic() - t0, [r.status_code for r in replies]
 
-    elapsed, codes, ok = asyncio.run(guess_in_parallel())
-    assert codes == [401, 401, 401] and elapsed >= 2.9  # 3 parallel guesses still take 3 s
-    assert ok == 200                                     # the right PIN is never held up
+    elapsed, codes = asyncio.run(burst())
+    assert codes.count(401) == 3 and codes.count(429) == 4  # only 3 may queue; the rest are never checked
+    assert codes[-1] == 429 and elapsed >= 0.85             # the hidden right PIN was refused, checks were serial
+
+
+def test_ten_wrong_pins_lock_the_form(make_client, monkeypatch):
+    monkeypatch.setattr(hub_app, "WRONG_PIN_DELAY_S", 0)
+    c = make_client()
+    for _ in range(hub_app.MAX_PIN_FAILS):
+        assert add_group(c, 1, pin="wrong").status_code == 401
+    assert add_group(c, 1).status_code == 429               # even the right PIN waits out the lock
+    assert c.get("/api/v1/state").json()["in"] == 0
+
+
+def test_right_pin_resets_the_wrong_count(make_client, monkeypatch):
+    monkeypatch.setattr(hub_app, "WRONG_PIN_DELAY_S", 0)
+    c = make_client()
+    for _ in range(hub_app.MAX_PIN_FAILS - 1):
+        add_group(c, 1, pin="wrong")
+    assert add_group(c, 5).status_code == 200
+    assert add_group(c, 1, pin="wrong").status_code == 401  # a staff typo after that is not a lockout
 
 
 def test_group_entries_need_the_staff_pin(make_client):

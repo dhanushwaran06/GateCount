@@ -33,7 +33,10 @@ log = logging.getLogger("hub")
 IST = timezone(timedelta(hours=5, minutes=30))  # Asia/Kolkata has no DST
 HERE = Path(__file__).resolve().parent
 STALE_CAMERA_S, OFFLINE_DEVICE_S, HEARTBEAT_S = 15, 30, 10
-MIN_PIN = 8  # staff PIN length; with one wrong guess/s an 8-char random PIN cannot be guessed in an event week
+# Staff PIN for the group form: every check is queued (one wrong guess per second, hub-wide), at most
+# MAX_PIN_WAITING attempts may queue, and MAX_PIN_FAILS wrong PINs in a row lock the form for PIN_LOCK_S.
+MIN_PIN, MAX_PIN_WAITING, MAX_PIN_FAILS, PIN_LOCK_S = 8, 3, 10, 600
+WRONG_PIN_DELAY_S = 1.0
 DATE = r"^\d{4}-\d{2}-\d{2}$"
 DEFAULTS = {"entry_factor": 1.0, "exit_factor": 1.0, "open_hours": "09:00-21:00",
             "devices": {"pc-a": "entry", "pc-b": "exit"}}
@@ -248,7 +251,8 @@ def create_app(cfg=None, tokens=None, db_path=None, staff_pin=None):
     if 0 < len(staff_pin) < MIN_PIN:
         log.warning("STAFF_PIN is shorter than %d characters: the group form stays switched off", MIN_PIN)
         staff_pin = ""
-    wrong_pin = asyncio.Lock()
+    pin_gate = asyncio.Lock()
+    pin = {"waiting": 0, "fails": 0, "locked_until": 0.0}
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -315,11 +319,29 @@ def create_app(cfg=None, tokens=None, db_path=None, staff_pin=None):
     async def require_staff(authorization):
         if not staff_pin:
             raise HTTPException(403, f"group entries are switched off: set an {MIN_PIN}+ character STAFF_PIN in hub/.env")
-        if same_secret(authorization.removeprefix("Bearer ").strip(), staff_pin):
-            return
-        async with wrong_pin:  # one wrong guess per second for the whole hub, however many connections try
-            log.warning("wrong staff PIN on the group form")
-            await asyncio.sleep(1)
+        def locked():
+            left = pin["locked_until"] - time.monotonic()
+            if left > 0:
+                raise HTTPException(429, f"too many wrong PINs: the group form is locked for {left / 60:.0f} more minutes")
+
+        locked()
+        if pin["waiting"] >= MAX_PIN_WAITING:  # do not even check: a queue of guesses is an attack, not staff
+            raise HTTPException(429, "too many attempts at once, try again in a few seconds")
+        pin["waiting"] += 1
+        try:
+            async with pin_gate:  # the throttle comes BEFORE the check, so parallel guesses cannot skip it
+                locked()
+                if same_secret(authorization.removeprefix("Bearer ").strip(), staff_pin):
+                    pin["fails"] = 0
+                    return
+                pin["fails"] += 1
+                log.warning("wrong staff PIN on the group form (%d in a row)", pin["fails"])
+                if pin["fails"] >= MAX_PIN_FAILS:
+                    pin["fails"], pin["locked_until"] = 0, time.monotonic() + PIN_LOCK_S
+                    log.error("%d wrong staff PINs in a row: group form locked for %d minutes", MAX_PIN_FAILS, PIN_LOCK_S // 60)
+                await asyncio.sleep(WRONG_PIN_DELAY_S)
+        finally:
+            pin["waiting"] -= 1
         raise HTTPException(401, "wrong staff PIN")
 
     @app.get("/api/v1/groups")

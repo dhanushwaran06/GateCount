@@ -95,6 +95,7 @@ async function problem(r) {
   if (r.status === 401) return "Wrong staff PIN.";
   if (r.status === 403) return "Group entries are switched off on the hub (no STAFF_PIN set).";
   if (r.status === 422) return "Check the name (1–80 characters) and people (1–1000).";
+  if (r.status === 429) return "Too many wrong PINs or attempts: the form is locked for a while. Check the PIN in hub/.env.";
   return `The hub answered ${r.status}. Try again.`;
 }
 
