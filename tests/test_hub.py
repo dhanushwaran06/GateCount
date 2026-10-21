@@ -1,5 +1,6 @@
 """Hub API: seq ordering, stale messages, calibration, INSIDE >= 0, day boundary, auth, health, history."""
 
+import json
 from datetime import datetime
 
 import pytest
@@ -116,6 +117,29 @@ def test_bad_token_unknown_device_and_wrong_gate(make_client):
     assert post(c, msg(device="pc-z"), token="tok-a").status_code == 401
     assert post(c, msg(gate="exit")).status_code == 409
     assert post(c, {"device": "pc-a"}).status_code == 422
+
+
+@pytest.mark.parametrize("bad", [
+    {"sent_at": "not a time"},
+    {"sent_at": "2026-11-02T11:00:00"},                    # no timezone
+    {"cameras": {"c1": {"count": 1, "last_frame_at": "yesterday"}}},
+    {"cameras": {f"c{i}": {"count": 1} for i in range(17)}},
+    {"cameras": {"c1": {"count": 10**12}}},
+])
+def test_malformed_messages_are_rejected_and_hub_keeps_serving(make_client, bad):
+    c = make_client()
+    post(c, msg(seq=1, counts=(4,)))
+    assert post(c, {**msg(seq=2), **bad}).status_code == 422
+    s = c.get("/api/v1/state")
+    assert s.status_code == 200 and s.json()["in"] == 4
+
+
+def test_nan_fps_is_rejected(make_client):
+    c = make_client()
+    body = json.dumps({**msg(seq=2), "cameras": {"c1": {"count": 1, "fps": float("nan")}}})  # raw "NaN" literal
+    r = c.post("/api/v1/counts", content=body, headers={"Authorization": f"Bearer {TOKENS['pc-a']}",
+                                                        "Content-Type": "application/json"})
+    assert r.status_code == 422 and c.get("/api/v1/state").status_code == 200
 
 
 def test_health_online_offline_and_stale(make_client):

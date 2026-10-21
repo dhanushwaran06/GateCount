@@ -19,12 +19,13 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import yaml
 from fastapi import FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 log = logging.getLogger("hub")
 
@@ -49,20 +50,29 @@ def calibrate(raw, factor):
     return math.floor(raw * factor + 0.5)
 
 
+def aware_iso(value):
+    """Reject timestamps that do not parse or have no timezone: they are stored and parsed on every state()."""
+    if value is not None and datetime.fromisoformat(value).tzinfo is None:
+        raise ValueError("timestamp needs a timezone offset, e.g. +05:30")
+    return value
+
+
 class CameraIn(BaseModel):
-    count: int = Field(ge=0)
-    wrong_way: int = Field(0, ge=0)
-    fps: float = 0.0
+    count: int = Field(ge=0, le=10_000_000)
+    wrong_way: int = Field(0, ge=0, le=10_000_000)
+    fps: float = Field(0.0, ge=0, le=1000, allow_inf_nan=False)  # NaN would break the dashboard's JSON
     last_frame_at: str | None = None
+    _check_ts = field_validator("last_frame_at")(aware_iso)
 
 
 class CountsIn(BaseModel):
-    device: str
+    device: str = Field(max_length=32)
     gate: Literal["entry", "exit"]
     date: str = Field(pattern=DATE)
-    seq: int
+    seq: int = Field(ge=0, le=2**62)
     sent_at: str
-    cameras: dict[str, CameraIn]
+    cameras: dict[Annotated[str, StringConstraints(max_length=32)], CameraIn] = Field(max_length=16)
+    _check_ts = field_validator("sent_at")(aware_iso)
 
 
 class Hub:
@@ -120,8 +130,10 @@ class Hub:
             cameras = []
             for cid, cam in (last or {}).get("cameras", {}).items():
                 frame_age = None
-                if cam["last_frame_at"]:  # age at send time (PC clock) + time since we received it (hub clock)
+                try:  # age at send time (PC clock) + time since we received it (hub clock)
                     frame_age = max(0.0, epoch(last["sent_at"]) - epoch(cam["last_frame_at"])) + (now - last["received_at"])
+                except (TypeError, ValueError):  # missing/odd timestamp: show the camera as stale, keep serving
+                    pass
                 cameras.append({"id": cid, "count": counts.get(cid, {}).get("count", 0),
                                 "wrong_way": counts.get(cid, {}).get("wrong_way", 0), "fps": cam["fps"],
                                 "frame_age_s": None if frame_age is None else round(frame_age, 1),
@@ -187,7 +199,7 @@ async def minute_writer(hub):
         await asyncio.sleep(60 - now.second - now.microsecond / 1e6 + 0.05)
         try:
             hub.write_minute(datetime.now(IST) - timedelta(seconds=30))
-        except sqlite3.Error:
+        except Exception:  # never let one bad minute stop the trend for the rest of the day
             log.exception("minute row write failed")
 
 
@@ -208,6 +220,11 @@ def create_app(cfg=None, tokens=None, db_path=None):
 
     app = FastAPI(title="Book fair people counter", lifespan=lifespan)
     app.state.hub = hub
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(_request, exc):
+        # name the bad field but do not echo the input: a NaN in it would make the error reply itself fail
+        return JSONResponse({"detail": [{"loc": e["loc"], "msg": e["msg"]} for e in exc.errors()]}, status_code=422)
 
     @app.post("/api/v1/counts")
     async def post_counts(msg: CountsIn, authorization: str = Header("")):
