@@ -45,8 +45,12 @@ MIN_PIN, MAX_PIN_WAITING, MAX_PIN_FAILS, PIN_LOCK_S = 8, 3, 10, 600
 GLOBAL_MAX_FAILS, TRUST_S, MAX_PIN_CLIENTS = 100, 12 * 3600, 1000
 WRONG_PIN_DELAY_S = 1.0
 DATE = r"^\d{4}-\d{2}-\d{2}$"
+# exit_enabled: false keeps the exit PC's code but switches it off: its messages are refused, OUT is 0.
+# fair_start: first day of the fair; the cumulative total leaves out earlier days (office tests). None = all days.
+# display_hold_s: the big-screen display holds its number this long on bulk or rapid updates, then flips.
 DEFAULTS = {"entry_factor": 1.0, "exit_factor": 1.0, "open_hours": "09:00-21:00",
-            "devices": {"pc-a": "entry", "pc-b": "exit"}}
+            "devices": {"pc-a": "entry", "pc-b": "exit"}, "exit_enabled": False, "fair_start": None,
+            "display_hold_s": 10}
 
 
 def today():
@@ -55,6 +59,10 @@ def today():
 
 def epoch(iso):
     return datetime.fromisoformat(iso).timestamp() if iso else None
+
+
+def gate_enabled(cfg, gate):
+    return gate != "exit" or bool(cfg["exit_enabled"])
 
 
 def calibrate(raw, factor):
@@ -130,11 +138,21 @@ class Hub:
         """(in_shown, out_shown, inside, raw) for a date. Group entries are exact head counts: not calibrated."""
         raw = {"entry": 0, "exit": 0, "groups": self.group_total(date)}
         for (_, d), rec in self.latest.items():
-            if d == date:
+            if d == date and gate_enabled(self.cfg, rec["gate"]):
                 raw[rec["gate"]] += sum(c["count"] for c in rec["cameras"].values())
         in_shown = calibrate(raw["entry"], self.cfg["entry_factor"]) + raw["groups"]
         out_shown = calibrate(raw["exit"], self.cfg["exit_factor"])
         return in_shown, out_shown, max(0, in_shown - out_shown), raw
+
+    def fair_total(self):
+        """Visitors since the fair started: entry crossings of every day (calibrated) + every group entry.
+        It never resets at midnight; it is rebuilt from saved data after any restart."""
+        start = self.cfg["fair_start"] or ""
+        raw = sum(sum(c["count"] for c in rec["cameras"].values())
+                  for (_, d), rec in self.latest.items() if rec["gate"] == "entry" and d >= start)
+        groups = self.db.execute("SELECT COALESCE(SUM(people), 0) FROM group_entries WHERE date >= ?",
+                                 (start,)).fetchone()[0]
+        return calibrate(raw, self.cfg["entry_factor"]) + groups
 
     def group_total(self, date):
         return self.db.execute("SELECT COALESCE(SUM(people), 0) FROM group_entries WHERE date = ?", (date,)).fetchone()[0]
@@ -161,6 +179,8 @@ class Hub:
         in_shown, out_shown, inside, raw = self.totals(date)
         devices = []
         for device, gate in self.cfg["devices"].items():
+            if not gate_enabled(self.cfg, gate):
+                continue
             counts = self.latest.get((device, date), {}).get("cameras", {})
             # health comes from the newest message of any date (a PC whose clock is off still shows online)
             recs = [r for (d, _), r in self.latest.items() if d == device]
@@ -179,10 +199,12 @@ class Hub:
                                 "stale": frame_age is None or frame_age > STALE_CAMERA_S})
             devices.append({"device": device, "gate": gate, "online": age is not None and age <= OFFLINE_DEVICE_S,
                             "last_seen_s": None if age is None else round(age, 1), "cameras": cameras})
-        return {"date": date, "in": in_shown, "out": out_shown, "inside": inside,
+        return {"date": date, "total": self.fair_total(), "fair_start": self.cfg["fair_start"],
+                "in": in_shown, "out": out_shown, "inside": inside,
                 "in_raw": raw["entry"], "in_groups": raw["groups"], "out_raw": raw["exit"],
                 "entry_factor": self.cfg["entry_factor"],
                 "exit_factor": self.cfg["exit_factor"], "open_hours": self.cfg["open_hours"],
+                "exit_enabled": bool(self.cfg["exit_enabled"]), "display_hold_s": self.cfg["display_hold_s"],
                 "stale_after_s": STALE_CAMERA_S, "offline_after_s": OFFLINE_DEVICE_S, "devices": devices}
 
     def write_minute(self, at: datetime) -> bool:
@@ -220,14 +242,25 @@ def load_config(path):
         cfg.update(yaml.safe_load(path.read_text()) or {})
     else:
         log.warning("%s not found, using defaults", path)
+    return check_config(cfg)
+
+
+def check_config(cfg):
+    """Normalise and validate the settings added for the fair, so a typo stops the hub at start, not mid-day."""
+    if cfg["fair_start"]:  # YAML reads an unquoted 2026-10-22 as a date: keep it as an ISO string
+        cfg["fair_start"] = str(cfg["fair_start"])
+        datetime.strptime(cfg["fair_start"], "%Y-%m-%d")
+    hold = cfg["display_hold_s"]
+    if isinstance(hold, bool) or not isinstance(hold, (int, float)) or not 0 <= hold <= 60:
+        raise SystemExit(f"display_hold_s must be a number of seconds from 0 to 60, got {hold!r}")
     return cfg
 
 
-def device_tokens(devices):
-    """Token per device from env: pc-a -> TOKEN_PC_A."""
+def device_tokens(devices, optional=()):
+    """Token per device from env: pc-a -> TOKEN_PC_A. No warning for `optional` (switched-off) devices."""
     tokens = {d: os.environ.get("TOKEN_" + d.upper().replace("-", "_"), "") for d in devices}
     for d, t in tokens.items():
-        if not t:
+        if not t and d not in optional:
             log.warning("no token for %s (set TOKEN_%s): its messages will be rejected", d, d.upper().replace("-", "_"))
     return tokens
 
@@ -261,8 +294,9 @@ def same_secret(given, expected):
 def create_app(cfg=None, tokens=None, db_path=None, staff_pin=None):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     load_env(HERE / ".env")
-    cfg = cfg or load_config(Path(os.environ.get("HUB_CONFIG", HERE / "config.yaml")))
-    tokens = tokens if tokens is not None else device_tokens(cfg["devices"])
+    cfg = check_config(dict(DEFAULTS, **cfg)) if cfg else load_config(Path(os.environ.get("HUB_CONFIG", HERE / "config.yaml")))
+    tokens = tokens if tokens is not None else device_tokens(
+        cfg["devices"], optional=[d for d, gate in cfg["devices"].items() if not gate_enabled(cfg, gate)])
     hub = Hub(cfg, tokens, db_path or os.environ.get("HUB_DB", HERE / "data" / "counts.db"))
     staff_pin = staff_pin if staff_pin is not None else os.environ.get("STAFF_PIN", "")
     if 0 < len(staff_pin) < MIN_PIN:
@@ -274,8 +308,9 @@ def create_app(cfg=None, tokens=None, db_path=None, staff_pin=None):
     @asynccontextmanager
     async def lifespan(_app):
         task = asyncio.create_task(minute_writer(hub))
-        log.info("hub ready: devices %s, factors entry %.3f exit %.3f",
-                 cfg["devices"], cfg["entry_factor"], cfg["exit_factor"])
+        log.info("hub ready: devices %s, factors entry %.3f exit %.3f, exit gate %s, fair total since %s",
+                 cfg["devices"], cfg["entry_factor"], cfg["exit_factor"],
+                 "enabled" if cfg["exit_enabled"] else "DISABLED", cfg["fair_start"] or "the first saved day")
         yield
         task.cancel()
 
@@ -294,6 +329,8 @@ def create_app(cfg=None, tokens=None, db_path=None, staff_pin=None):
             raise HTTPException(401, "bad or missing device token")
         if msg.gate != cfg["devices"][msg.device]:
             raise HTTPException(409, f"{msg.device} is configured for gate '{cfg['devices'][msg.device]}'")
+        if not gate_enabled(cfg, msg.gate):
+            raise HTTPException(403, "the exit gate is disabled on the hub (exit_enabled: false in hub/config.yaml)")
         accepted = hub.accept(msg, time.time())
         if accepted:
             await hub.notify()

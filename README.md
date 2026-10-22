@@ -3,6 +3,10 @@
 Counts people at one entry gate (IN) and one exit gate (OUT) with webcams and YOLO26n, and shows
 IN / OUT / INSIDE plus an occupancy trend on a live dashboard. `CLAUDE.md` is the design source of truth.
 
+**For the fair (2026-10-22):** only the entry PC counts (the exit gate is switched off: `exit_enabled: false` in
+`hub/config.yaml`, set `true` to count exits again). The public display shows one cumulative **Total Visitors**
+that adds up every day of the fair from `fair_start` and never resets at midnight.
+
 ```text
 counter/   runs on PC-A (entry) and PC-B (exit): same code, different counter/config.yaml
 hub/       FastAPI + SQLite + dashboard (runs on the entry PC; Docker files for a server later)
@@ -21,14 +25,18 @@ AI agents → [`AGENTS.md`](AGENTS.md) / [`CLAUDE.md`](CLAUDE.md).
 | PC | Runs | Screen |
 | --- | --- | --- |
 | **PC-A, entry** | counter (`pc-a`, counts IN) + hub on port 8000 | Monitor 1: live camera window (full screen). Monitor 2: big-screen display `http://localhost:8000/display` |
-| **PC-B, exit** | counter (`pc-b`, counts OUT) → posts to PC-A's hub | Live camera window |
+| **PC-B, exit** | counter (`pc-b`, counts OUT) → posts to PC-A's hub. **Disabled for now** (`exit_enabled: false`) | Live camera window |
 
 Pages on the hub (any phone or laptop on the same network, `http://<PC-A address>:8000/...`):
 
-- `/display`: the public big-screen display (2025 expo look: neon, split-flap total, trend). Press F11 for full screen.
-- `/`: staff dashboard with gate and camera health.
-- `/groups`: staff form for **school groups that entered without walking through the entry cameras**.
-  Needs the `STAFF_PIN` from `hub/.env`; the head count is added to IN as typed, and can be undone.
+- `/display`: the public big-screen display: "AI-Powered Visitor Count", **Total Visitors** on a six-digit
+  split-flap counter, and the credit line. Nothing else. Press F11 for full screen. One new visitor flips at once;
+  a school group or a quick series of updates holds the number `display_hold_s` (10 s, or e.g. 5) and then flips
+  to the latest total. Only the display waits: counting and the database never do.
+- `/`: staff dashboard: Total Visitors, today's IN (OUT and INSIDE when the exit gate is on), gate and camera health.
+- `/groups`: staff form for **school groups that entered without walking through the entry cameras**:
+  School Name and Number of People. The `STAFF_PIN` from `hub/.env` is asked once per phone (then remembered);
+  the number of people is added to Total Visitors exactly as typed, and can be undone.
 
 ## One-time setup per PC (needs internet for ~2 minutes)
 
@@ -46,6 +54,19 @@ ls models/yolo26n_640_openvino_model || .venv/bin/python tools/export_model.py
   `COUNTER_TOKEN=` that PC's token. New tokens: `python3 -c "import secrets; print(secrets.token_urlsafe(24))"`.
 - Turn on **automatic login** for the user (Settings → Users), so everything starts after a power cut.
 - Set **Screen Blank: Never** (Settings → Power), or the gate monitors go black after 5 minutes.
+
+## Pre-launch checklist
+
+```bash
+.venv/bin/python tools/preflight.py                # check everything, then start the app (only if nothing FAILs)
+.venv/bin/python tools/preflight.py --check-only   # check only (exit code 0 = ready)
+```
+
+Checks software and packages, config and tokens, the model, every camera (connected, USB speed, not held by
+another program such as a browser tab, frames, fps, picture), kernel USB errors (`error -71` = cable/extension too
+weak), the hub database and state files, disk, LAN and hub reachability, clock, and that nothing is already running.
+Each line is PASS / WARN / FAIL; a WARN never blocks. If the systemd services are installed it starts them,
+otherwise it runs the hub (entry PC) and the counter itself until Ctrl-C (`--fullscreen`, `--headless`).
 
 ## Start, stop, logs
 
@@ -75,11 +96,14 @@ Green flash = counted, red flash = wrong way. **NO SIGNAL** = no frames for 2 s:
 
 ## Reset the day (after morning test walks)
 
-Run on **each** PC (any order; the newest total always wins):
+Run on **each** PC (any order; the newest total always wins), and only **before the doors open**:
 
 ```bash
 .venv/bin/python tools/reset_day.py
 ```
+
+It removes today's camera counts only, so Total Visitors keeps every earlier day of the fair. Office test days
+before the fair are left out by `fair_start` in `hub/config.yaml` (set it to the first day of the fair).
 
 ## Calibration
 
@@ -115,7 +139,9 @@ The exit PC only needs to reach `http://<PC-A>:8000`. Set that once in the exit 
 
 1. PCs on (automatic login starts everything). Staff dashboard (`/`): both gates **Online**, all cameras **Live**.
 2. Walk through once at each gate: counts go up on the dashboard within 2 s.
-3. `tools/reset_day.py` on both PCs. Display shows 000 000, staff dashboard 0 / 0 / 0. Groups start at 0 too.
+3. `tools/reset_day.py` on both PCs. Day 1: display shows 000 000. Later days: display shows the total of the
+   days before (it never resets), staff dashboard IN today 0.
+4. `tools/preflight.py`: every line PASS or WARN, then it starts the app.
 
 ## Troubleshooting
 
@@ -137,6 +163,6 @@ Then point both counters' `hub_url` at it. Nothing else changes.
 ## Development
 
 ```bash
-.venv/bin/pytest                                   # 49 tests, no camera needed
+.venv/bin/pytest                                   # 86 tests, no camera needed
 .venv/bin/python tools/simulate.py --device pc-b --gate exit --token <TOKEN_PC_B>   # fake exit counter
 ```

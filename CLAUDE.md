@@ -9,8 +9,13 @@ An AI people counter for a book fair (expo hall) with **one big entry gate and o
 
 - Entry gate counts **IN**. Exit gate counts **OUT**.
 - Dashboard shows **IN, OUT, INSIDE** (INSIDE = IN − OUT, never below 0) and a **smoothed occupancy trend**.
-- A public **big-screen display** (`/display`) carries over the 2025 expo look (neon, split-flap total); staff can
-  add **school groups** that did not walk through the entry cameras (`/groups`, staff PIN).
+- A public **big-screen display** (`/display`) carries over the 2025 expo look and shows ONLY: "AI-Powered Visitor
+  Count", "Total Visitors" on a six-digit split-flap counter, and "Developed by Center of Excellence, ABC
+  Technologies." Total Visitors is **cumulative over the whole fair** (all days since `fair_start`, never reset at
+  midnight). Staff can add **school groups** that did not walk through the entry cameras (`/groups`: School Name +
+  Number of People, staff PIN asked once per phone).
+- **Decision 2026-10-21: exit gate disabled for the fair.** Its code stays; `exit_enabled: false` in hub config
+  (refuses pc-b, OUT = 0, exit hidden). `true` re-enables it with no other change.
 - Goal: a **slow, steady, believable occupancy trend through the day**. Exact counts are NOT required.
   Target accuracy: each gate within ±10% of a manual clicker count after calibration.
 - Latency target: a crossing shows on the dashboard within **2 s**.
@@ -115,6 +120,12 @@ Licence note: Ultralytics is AGPL-3.0. Fine for this internal event deployment.
 - Hub calibration factors per gate live in hub config: `IN_shown = round(IN_raw × entry_factor) + groups`
   (school-group head counts are exact, never calibrated),
   `OUT_shown = round(OUT_raw × exit_factor)`, `INSIDE = max(0, IN_shown − OUT_shown)`.
+- **Total Visitors** (`total` in `/api/v1/state`) = `round(entry raw of every day ≥ fair_start × entry_factor)` +
+  every group entry ≥ fair_start. Counters keep one state file per day; the hub adds the days, so the total never
+  resets and is rebuilt from saved data after any restart. Today's IN/OUT/INSIDE stay per day.
+- Display flip timing (display only, never delays counting or storage): a single +1 flips at once; a bulk change or
+  a change within 3 s of the previous one holds the shown number `display_hold_s` (hub config, default 10), then
+  flips to the latest total.
 - Hub writes one row per minute to SQLite: date, minute, in_shown, out_shown, inside.
 - Trend line = 5-minute rolling average of INSIDE, computed in the dashboard from the minute rows.
 
@@ -175,8 +186,12 @@ message brokers, cloud video, re-identification across cameras, alerting systems
 
 ## 12. Current status (2026-10-21, expo opens 2026-10-22)
 
-- Phases 0–4 of `BUILD_PROMPT.md` are built and verified (49 tests). Phase 5–7 = office/venue testing now:
+- Phases 0–4 of `BUILD_PROMPT.md` are built and verified. Phase 5–7 = office/venue testing now:
   follow `docs/TESTING.md`. **Do not rebuild from BUILD_PROMPT.md** — it is the original plan, kept for history.
+- Branch `feature/bookfair-counter-improvements` (86 tests): minimal public display, cumulative Total Visitors,
+  two-field group form, exit gate switch, display flip hold, `tools/preflight.py` (pre-launch checklist that
+  starts the app only when no mandatory check fails), and `to_frame` converting raw YUYV after a USB glitch
+  (it used to crash the live window).
 - Exit PC `i45g-06` (Ubuntu, user `sysadmin`, Logitech C270 + C505e) benchmarked 15 fps per camera.
   Entry PC-A is not set up yet; the dev laptop simulated it. Known issues: `docs/TESTING.md` § Known issues.
 

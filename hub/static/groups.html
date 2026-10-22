@@ -49,6 +49,12 @@
   .total b { font-size: 28px; }
   footer { font-size: 14px; color: var(--text-muted); display: flex; gap: 16px; flex-wrap: wrap; }
   a { color: var(--accent); }
+  dialog { border: 1px solid var(--border); border-radius: 12px; background: var(--surface-1); color: var(--text-primary);
+           padding: 16px; width: min(360px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgba(0, 0, 0, .45); }
+  dialog form { gap: 10px; }
+  .actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .actions button.ghost { color: var(--text-secondary); padding: 12px; }
   @media (max-width: 420px) { .row { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -57,20 +63,28 @@
   <header>
     <h1>School group entries</h1>
     <p class="note">Only for groups that entered <b>without</b> walking through the entry gate cameras.
-      Everyone who walks through the gate is already counted. The number is added to the visitor total as typed.</p>
+      Everyone who walks through the gate is already counted. The number of people is added to the
+      Total Visitors exactly as typed.</p>
   </header>
 
   <section class="card">
     <form id="form" autocomplete="off">
-      <label for="pin">Staff PIN<input id="pin" type="password" required autocomplete="current-password"></label>
       <div class="row">
-        <label for="name">School / group name<input id="name" maxlength="80" required placeholder="e.g. Govt. Higher Secondary School"></label>
-        <label for="people">People<input id="people" type="number" min="1" max="1000" step="1" required inputmode="numeric"></label>
+        <label for="name">School Name<input id="name" maxlength="80" required placeholder="e.g. Govt. Higher Secondary School"></label>
+        <label for="people">Number of People<input id="people" type="number" min="1" max="1000" step="1" required inputmode="numeric"></label>
       </div>
       <button id="add" type="submit">Add group</button>
       <div class="msg" id="msg" role="status"></div>
     </form>
   </section>
+
+  <!-- The staff PIN is not a form field: asked once per phone (remembered), and again only if the hub rejects it. -->
+  <dialog id="pin-dialog">
+    <form method="dialog" id="pin-form">
+      <label for="pin">Staff PIN<input id="pin" type="password" required autocomplete="current-password"></label>
+      <div class="actions"><button class="ghost" type="button" id="pin-cancel">Cancel</button><button type="submit">Continue</button></div>
+    </form>
+  </dialog>
 
   <section class="card">
     <div class="total"><h2>Today</h2><span><b id="total">0</b> people in <span id="count">0</span> groups</span></div>
@@ -87,14 +101,41 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 const fmt = new Intl.NumberFormat("en-IN");
-try { $("pin").value = localStorage.getItem("gatecount-pin") || ""; } catch (e) { /* storage blocked */ }
+let pin = "";
+try { pin = localStorage.getItem("gatecount-pin") || ""; } catch (e) { /* storage blocked */ }
+
+function askPin() {  // resolves with the PIN typed, or "" if cancelled
+  return new Promise((resolve) => {
+    const d = $("pin-dialog");
+    $("pin").value = "";
+    $("pin-form").onsubmit = () => resolve($("pin").value.trim());
+    $("pin-cancel").onclick = () => { d.close(); resolve(""); };
+    d.oncancel = () => resolve("");
+    d.showModal();
+  });
+}
+// Send with the remembered PIN; on "wrong PIN" (or none yet) ask once and retry.
+async function withPin(send) {
+  if (!pin) pin = await askPin();
+  if (!pin) return null;
+  let r = await send(pin);
+  if (r.status === 401) {
+    say("Wrong staff PIN.", false);
+    pin = await askPin();
+    if (!pin) return r;
+    r = await send(pin);
+  }
+  if (r.ok) { try { localStorage.setItem("gatecount-pin", pin); } catch (err) { /* storage blocked */ } }
+  else if (r.status === 401) { pin = ""; try { localStorage.removeItem("gatecount-pin"); } catch (err) { /* storage blocked */ } }
+  return r;
+}
 
 function say(text, ok) { const m = $("msg"); m.textContent = text; m.className = "msg " + (ok ? "ok" : "err"); }
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 async function problem(r) {
   if (r.status === 401) return "Wrong staff PIN.";
   if (r.status === 403) return "Group entries are switched off on the hub (no STAFF_PIN set).";
-  if (r.status === 422) return "Check the name (1–80 characters) and people (1–1000).";
+  if (r.status === 422) return "Check the school name (1–80 characters) and number of people (1–1000).";
   if (r.status === 429) return "Too many wrong PINs from this phone: it is locked for up to 10 minutes. Other phones still work.";
   return `The hub answered ${r.status}. Try again.`;
 }
@@ -113,13 +154,13 @@ async function load() {
 
 $("form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const pin = $("pin").value.trim(), name = $("name").value.trim(), people = Number($("people").value);
+  const name = $("name").value.trim(), people = Number($("people").value);
   $("add").disabled = true;
   try {
-    const r = await fetch("/api/v1/groups", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${pin}` },
-                                              body: JSON.stringify({ name, people }) });
+    const r = await withPin((p) => fetch("/api/v1/groups", { method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${p}` }, body: JSON.stringify({ name, people }) }));
+    if (!r) { say("Nothing was added (no staff PIN).", false); return; }
     if (!r.ok) { say(await problem(r), false); return; }
-    try { localStorage.setItem("gatecount-pin", pin); } catch (err) { /* storage blocked */ }
     say(`Added ${fmt.format(people)} people (${name}).`, true);
     $("name").value = ""; $("people").value = ""; $("name").focus();
     load();
@@ -129,8 +170,9 @@ $("form").addEventListener("submit", async (e) => {
 
 $("list").addEventListener("click", async (e) => {
   const b = e.target.closest("button[data-id]");
-  if (!b || !confirm(`Remove ${b.dataset.label} from today's total?`)) return;
-  const r = await fetch(`/api/v1/groups/${b.dataset.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${$("pin").value.trim()}` } });
+  if (!b || !confirm(`Remove ${b.dataset.label} from the total?`)) return;
+  const r = await withPin((p) => fetch(`/api/v1/groups/${b.dataset.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${p}` } }));
+  if (!r) return;
   if (r.ok) { say(`Removed ${b.dataset.label}.`, true); load(); } else say(await problem(r), false);
 });
 

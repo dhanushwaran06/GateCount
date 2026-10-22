@@ -46,13 +46,18 @@ def open_capture(source, width=WIDTH, height=HEIGHT, fps=30):
 
 
 def to_frame(data, width=None, height=None):
-    """Raw MJPEG bytes or a decoded image -> BGR image (resized to width x height if given), None if corrupt."""
+    """Raw MJPEG bytes or a decoded image -> BGR image (resized to width x height if given), None if corrupt.
+    A camera that reconnects after a USB glitch may not take MJPG and sends raw YUYV (2 channels): converted."""
     if data is None:
         return None
     if data.ndim == 2 and data.shape[0] == 1:
         data = cv2.imdecode(data, cv2.IMREAD_COLOR)
         if data is None:
             return None
+    elif data.ndim == 3 and data.shape[2] == 2:
+        data = cv2.cvtColor(data, cv2.COLOR_YUV2BGR_YUYV)
+    if data.ndim != 3 or data.shape[2] != 3:
+        return None  # any other layout would crash YOLO or the live window
     if width and (data.shape[1] != width or data.shape[0] != height):
         data = cv2.resize(data, (width, height), interpolation=cv2.INTER_AREA)
     return data

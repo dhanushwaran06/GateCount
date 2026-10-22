@@ -23,7 +23,8 @@ def iso(ts):
 
 
 class Totals:
-    """Thread-safe cumulative counts for today. A new IST date starts again at 0.
+    """Thread-safe cumulative counts for today. A new IST date starts its own file at 0; every day's file is kept
+    and the hub adds all days of the fair into "Total Visitors", so that total never resets at midnight.
 
     `version` increases on every change; the sender and writer use it to know when there is news.
     """

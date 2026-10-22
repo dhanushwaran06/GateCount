@@ -45,7 +45,7 @@ python3 -c "import secrets; print(secrets.token_urlsafe(24))"   # run twice: one
 
 ### T1. Unit tests
 
-`.venv/bin/pytest` → **pass:** `49 passed`.
+`.venv/bin/pytest` → **pass:** `86 passed`.
 
 ### T2. Cameras and cables
 
@@ -117,17 +117,26 @@ Watch the dashboard while someone crosses. **Pass:** IN (or OUT) goes up within 
 
 ### T10. Reset
 
-`.venv/bin/python tools/reset_day.py` on every PC. **Pass:** dashboard shows 0 / 0 / 0, both gates Online.
+`.venv/bin/python tools/reset_day.py` on every PC. **Pass:** staff dashboard IN today 0, gates Online;
+Total Visitors keeps the earlier days of the fair (it never resets).
+
+### T10b. Pre-launch checklist
+
+`.venv/bin/python tools/preflight.py --check-only` with the services stopped. **Pass:** every line
+PASS or WARN and `READY`. Unplug a camera (or open it in a browser tab) and run it again: **pass** = FAIL for
+that camera and `Nothing was started`.
 
 ### T11. Big-screen display and school groups
 
-1. On the entry PC open `http://localhost:8000/display`, press F11. **Pass:** the total flips within 2 s of a
-   counted crossing, INSIDE / EXITED / PEAK / LAST HOUR update, the trend draws, LIVE dot is green.
-2. Stop the hub for 30 s (`systemctl --user stop gatecount-hub`, then `start`). **Pass:** the dot turns orange
-   (RECONNECTING) and recovers by itself; the numbers come back unchanged.
-3. Open `http://<entry PC>:8000/groups` on a phone. Add a group with a wrong PIN: **pass** = "Wrong staff PIN",
-   nothing added. With the right PIN add 25 people: the display total goes up by 25 within 2 s. Press Undo:
-   it goes back down.
+1. On the entry PC open `http://localhost:8000/display`, press F11. **Pass:** only "AI-Powered Visitor Count",
+   "Total Visitors" with six flip digits, and the "Developed by Center of Excellence, ABC Technologies." line.
+   One person crossing flips the total within 2 s.
+2. Stop the hub for 30 s (`systemctl --user stop gatecount-hub`, then `start`). **Pass:** the display recovers by
+   itself and the total comes back unchanged.
+3. Open `http://<entry PC>:8000/groups` on a phone: only School Name and Number of People. Add a group: the PIN is
+   asked once. Wrong PIN: **pass** = "Wrong staff PIN", nothing added. Right PIN, 25 people: the display holds for
+   `display_hold_s` (10 s), then shows the total + 25. Press Undo: it goes back down (again after the hold).
+   Several people crossing within a few seconds also hold, then flip to the latest total.
 4. Leave the display for 10 minutes. **Pass:** the screen does not blank (Screen Blank: Never).
 
 ### T12. One-hour run (optional, recommended)

@@ -1,7 +1,9 @@
-"""Hub API: seq ordering, stale messages, calibration, INSIDE >= 0, day boundary, auth, health, history."""
+"""Hub API: seq ordering, stale messages, calibration, INSIDE >= 0, day boundary, auth, health, history,
+cumulative fair total, exit gate switch, display settings."""
 
 import asyncio
 import json
+import re
 import time
 from datetime import datetime
 
@@ -20,8 +22,8 @@ DAY = "2026-11-02"
 def make_client(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_app, "today", lambda: DAY)
 
-    def make(entry_factor=1.0, exit_factor=1.0, staff_pin=PIN):
-        cfg = dict(hub_app.DEFAULTS, entry_factor=entry_factor, exit_factor=exit_factor)
+    def make(entry_factor=1.0, exit_factor=1.0, staff_pin=PIN, exit_enabled=True, **extra):
+        cfg = dict(hub_app.DEFAULTS, entry_factor=entry_factor, exit_factor=exit_factor, exit_enabled=exit_enabled, **extra)
         return TestClient(hub_app.create_app(cfg=cfg, tokens=TOKENS, db_path=tmp_path / "hub.db", staff_pin=staff_pin))
     return make
 
@@ -97,6 +99,7 @@ def test_day_boundary_only_counts_today(make_client, monkeypatch):
     monkeypatch.setattr(hub_app, "today", lambda: "2026-11-03")
     s = c.get("/api/v1/state").json()
     assert (s["date"], s["in"]) == ("2026-11-03", 0)
+    assert s["total"] == 57  # the public total does not reset at midnight
 
 
 def test_minute_rows_and_midnight(make_client):
@@ -358,3 +361,103 @@ def test_display_and_group_pages_are_served(make_client):
     c = make_client()
     for path in ("/display", "/groups", "/static/fonts/orbitron.woff2"):
         assert c.get(path).status_code == 200, path
+
+
+# ---------------------------------------------------------------- cumulative fair total
+
+def test_fair_total_adds_up_every_day_and_every_group(make_client, monkeypatch):
+    c = make_client(entry_factor=2.0)
+    post(c, msg(seq=1, counts=(10, 5), date="2026-11-01"))   # day 1: 15 raw
+    post(c, msg(seq=2, counts=(7,), date=DAY))               # day 2: 7 raw
+    post(c, msg("pc-b", "exit", counts=(9,)))                # exits never lower the visitor total
+    add_group(c, 40)                                         # exact head count, not calibrated
+    s = c.get("/api/v1/state").json()
+    assert s["total"] == (15 + 7) * 2 + 40 and s["in"] == 7 * 2 + 40
+    monkeypatch.setattr(hub_app, "today", lambda: "2026-11-03")  # next day, before anyone walks in
+    s = c.get("/api/v1/state").json()
+    assert (s["in"], s["total"]) == (0, 84)
+
+
+def test_fair_total_survives_hub_restart(make_client):
+    c = make_client()
+    post(c, msg(seq=1, counts=(30,), date="2026-11-01"))
+    post(c, msg(seq=2, counts=(12,)))
+    add_group(c, 25)
+    assert make_client().get("/api/v1/state").json()["total"] == 67  # same db file, new process
+
+
+def test_fair_start_leaves_out_office_test_days(make_client):
+    c = make_client(fair_start="2026-11-02")
+    post(c, msg(seq=1, counts=(500,), date="2026-11-01"))   # test walks before the fair
+    post(c, msg(seq=2, counts=(8,)))
+    s = c.get("/api/v1/state").json()
+    assert (s["total"], s["fair_start"]) == (8, "2026-11-02")
+
+
+def test_fair_start_from_unquoted_yaml_date(tmp_path):
+    (tmp_path / "config.yaml").write_text("fair_start: 2026-10-22\ndisplay_hold_s: 5\n")
+    cfg = hub_app.load_config(tmp_path / "config.yaml")
+    assert (cfg["fair_start"], cfg["display_hold_s"], cfg["exit_enabled"]) == ("2026-10-22", 5, False)
+
+
+# ---------------------------------------------------------------- exit gate (pc-b) switched off
+
+def test_exit_gate_disabled_refuses_pc_b_and_hides_it(make_client):
+    c = make_client(exit_enabled=False)
+    post(c, msg(counts=(20,)))
+    r = post(c, msg("pc-b", "exit", counts=(5,)))
+    assert r.status_code == 403 and "exit_enabled" in r.json()["detail"]
+    s = c.get("/api/v1/state").json()
+    assert (s["in"], s["out"], s["total"], s["exit_enabled"]) == (20, 0, 20, False)
+    assert [d["device"] for d in s["devices"]] == ["pc-a"]
+
+
+def test_exit_gate_can_be_enabled_again_without_losing_counts(make_client):
+    c = make_client(exit_enabled=True)
+    post(c, msg("pc-b", "exit", counts=(6,)))
+    assert make_client(exit_enabled=False).get("/api/v1/state").json()["out"] == 0   # ignored while off
+    s = make_client(exit_enabled=True).get("/api/v1/state").json()                   # back on: still there
+    assert s["out"] == 6 and [d["device"] for d in s["devices"]] == ["pc-a", "pc-b"]
+
+
+def test_disabled_exit_pc_is_told_why_not_bad_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(hub_app, "today", lambda: DAY)
+    monkeypatch.setenv("TOKEN_PC_A", "tok-a")
+    monkeypatch.setenv("TOKEN_PC_B", "tok-b")   # tokens read from the environment, as on the gate PC
+    c = TestClient(hub_app.create_app(cfg=dict(hub_app.DEFAULTS), db_path=tmp_path / "hub.db", staff_pin=PIN))
+    assert post(c, msg("pc-b", "exit", counts=(5,))).status_code == 403
+
+
+def test_exit_gate_is_off_by_default():
+    assert hub_app.DEFAULTS["exit_enabled"] is False
+
+
+# ---------------------------------------------------------------- big-screen display and group form
+
+@pytest.mark.parametrize("hold", [5, 10, 0])
+def test_display_hold_is_configurable(make_client, hold):
+    assert make_client(display_hold_s=hold).get("/api/v1/state").json()["display_hold_s"] == hold
+
+
+@pytest.mark.parametrize("hold", [-1, 61, "10", True])
+def test_bad_display_hold_stops_the_hub(make_client, hold):
+    with pytest.raises(SystemExit):
+        make_client(display_hold_s=hold)
+
+
+def test_display_shows_only_title_total_and_credit(make_client):
+    html = make_client().get("/display").text
+    visible = re.sub(r"<(script|style)\b.*?</\1>", "", html, flags=re.S)
+    text = " ".join(re.sub(r"<[^>]+>", " ", visible).split())
+    assert text == ("AI-Powered Visitor Count AI-Powered Visitor Count Total Visitors "
+                    "Developed by Center of Excellence , ABC Technologies .")  # <title> + h1, label, footer
+    assert "DIGITS = 6" in html and "s.total" in html                         # six-digit flip counter of the fair total
+    for gone in ("INSIDE", "EXITED", "PEAK", "LAST HOUR", "/api/v1/history", "chart"):
+        assert gone not in html, gone
+
+
+def test_group_form_has_only_school_name_and_people(make_client):
+    html = make_client().get("/groups").text
+    form = re.search(r'<form id="form".*?</form>', html, re.S)[0]
+    assert re.findall(r'<input id="(\w+)"', form) == ["name", "people"]
+    assert "School Name" in form and "Number of People" in form

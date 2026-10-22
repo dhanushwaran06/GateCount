@@ -41,6 +41,12 @@ class Sender(threading.Thread):
         try:
             r = self.client.post(self.url, json=msg)
             r.raise_for_status()
+        except httpx.HTTPStatusError as e:  # reachable, but refused: say why (bad token, gate disabled, ...)
+            if self.ok is not False:
+                log.warning("hub refused the message (%d): %s — will keep retrying; counts are kept here",
+                            e.response.status_code, e.response.text[:200])
+            self.ok = False
+            return None
         except httpx.HTTPError as e:
             if self.ok is not False:
                 log.warning("hub unreachable (%s): %s — will keep retrying", self.url, e)

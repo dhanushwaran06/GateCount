@@ -1,7 +1,8 @@
 # Hub config. Copy to hub/config.yaml. Restart the hub after editing (totals are kept).
 
 # Calibration: shown = round(raw x factor). Set factor = hand-clicker count / system count for that gate
-# over the same 10 minutes. Change before opening if you can: earlier minute rows keep the old factor.
+# over the same 10 minutes. Change before opening if you can: earlier minute rows keep the old factor
+# (the cumulative fair total is recomputed with the new factor).
 entry_factor: 1.0
 exit_factor: 1.0
 
@@ -12,3 +13,16 @@ open_hours: "09:00-21:00"
 devices:
   pc-a: entry
   pc-b: exit
+
+# Exit gate (pc-b). false = switched off for now: the hub refuses pc-b's messages, OUT stays 0 and the
+# dashboards hide the exit gate. Set true (and TOKEN_PC_B in .env) to count exits again; nothing else changes.
+exit_enabled: false
+
+# First day of the fair (IST, YYYY-MM-DD). The public "Total Visitors" adds up every day from here on and
+# never resets at midnight. Days before it (office tests) are left out. Leave empty to add up every saved day.
+fair_start: "2026-10-22"
+
+# Big-screen display: a single new visitor flips the counter at once. Bulk entries (a school group, several
+# people in one update) or rapid updates hold the shown number this many seconds, then flip to the latest
+# total. Display only: counting and the database are never delayed. 10 by default; 5 for a livelier screen.
+display_hold_s: 10

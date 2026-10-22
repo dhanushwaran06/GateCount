@@ -6,6 +6,10 @@
 Stops the GateCount services if they run, removes the counter's state/<date>.json (if this PC counts) and the
 hub's rows for that date (if this PC hosts the hub), then starts the services again. The order between PCs
 does not matter: counters send cumulative totals with an ever-increasing seq, so the newest total always wins.
+
+The public "Total Visitors" adds up every day of the fair, so this also takes that day's camera counts out of
+it. Run it only BEFORE the doors open (then the day holds test walks only); earlier days are never touched.
+School-group entries are kept.
 """
 
 import sqlite3
